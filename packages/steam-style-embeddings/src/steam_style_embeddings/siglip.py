@@ -35,8 +35,13 @@ class SiglipEmbedder:
         if not self.is_ready():
             return None
 
+        processor = self.processor
+        model = self.model
+        assert processor is not None
+        assert model is not None
+
         try:
-            inputs = self.processor(
+            inputs = processor(
                 text=[text],
                 return_tensors="pt",
                 padding="max_length",
@@ -44,9 +49,9 @@ class SiglipEmbedder:
             ).to(self.device)
 
             with torch.no_grad():
-                output = self.model.get_text_features(**inputs)
+                features = model.get_text_features(**inputs)
 
-            features = output.pooler_output.float()
+            features = features.float()
             features = features / features.norm(dim=-1, keepdim=True)
             return features.squeeze(0).detach().cpu().tolist()
         except Exception as exc:
@@ -57,17 +62,22 @@ class SiglipEmbedder:
         if not self.is_ready():
             return None
 
+        processor = self.processor
+        model = self.model
+        assert processor is not None
+        assert model is not None
+
         try:
             if image.mode != "RGB":
                 image = image.convert("RGB")
 
-            inputs = self.processor(
+            inputs = processor(
                 images=image, return_tensors="pt").to(self.device)
 
             with torch.no_grad():
-                output = self.model.get_image_features(**inputs)
+                features = model.get_image_features(**inputs)
 
-            features = output.pooler_output.float()
+            features = features.float()
             features = features / features.norm(dim=-1, keepdim=True)
             return features.squeeze(0).detach().cpu().tolist()
         except (RuntimeError, ValueError, OSError) as exc:

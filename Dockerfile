@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1 \
     HF_HOME=/data/hf
 
 WORKDIR /app
@@ -18,6 +19,6 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY packages ./packages
 
-RUN uv sync --frozen
+RUN uv sync --frozen --no-cache
 
 CMD ["uv", "run", "python", "src/main.py"]

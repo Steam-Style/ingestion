@@ -28,3 +28,10 @@ dependencies = [
 [tool.uv.sources]
 steam = { git = "https://github.com/solsticegamestudios/steam" }
 steam-style-embeddings = { path = "packages/steam-style-embeddings", editable = true }
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
