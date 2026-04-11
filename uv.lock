@@ -1351,6 +1351,23 @@ client = [
 ]
 
 [[package]]
+name = "steam-style-embeddings"
+version = "0.1.0"
+source = { editable = "packages/steam-style-embeddings" }
+dependencies = [
+    { name = "pillow" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "torch", specifier = ">=2.2.0" },
+    { name = "transformers", specifier = ">=4.41.0" },
+]
+
+[[package]]
 name = "steam-style-ingestion"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1368,6 +1385,7 @@ dependencies = [
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "steam", extra = ["client"] },
+    { name = "steam-style-embeddings" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -1389,6 +1407,7 @@ requires-dist = [
     { name = "scikit-image", specifier = ">=0.26.0" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "steam", extras = ["client"], git = "https://github.com/solsticegamestudios/steam" },
+    { name = "steam-style-embeddings", editable = "packages/steam-style-embeddings" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "torchvision", specifier = ">=0.26.0" },
     { name = "transformers", specifier = ">=5.5.3" },
