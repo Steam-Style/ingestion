@@ -2,6 +2,7 @@
 Handles ingestion of Steam item data, including image processing and vector database management.
 """
 import logging
+from datetime import datetime
 from typing import Optional
 
 from tqdm import tqdm
@@ -86,7 +87,7 @@ if __name__ == "__main__":
 
         fetcher = SteamFetcher()
         definitions = fetcher.next_page()
-        processed: dict[int, int] = {}
+        processed: dict[int, datetime] = {}
 
         while definitions:
             points: list[models.PointStruct] = []
@@ -96,11 +97,26 @@ if __name__ == "__main__":
                     payload = fetcher.map_payload(definition)
                     item = payload.get("item", {})
                     item_id = item.get("id")
-                    update_date = payload.get(
+
+                    if item_id is None:
+                        continue
+
+                    updated_at_value = payload.get(
                         "timestamps", {}).get("updated_at")
+                    if updated_at_value is None:
+                        continue
+
+                    try:
+                        update_date = datetime.fromisoformat(
+                            updated_at_value.replace("Z", "+00:00"))
+                    except ValueError:
+                        logger.warning(
+                            "Skipping item %s due to invalid updated_at: %s", item_id, updated_at_value)
+                        continue
+
                     last_processed = processed.get(item_id)
 
-                    if item_id is None or last_processed is None or update_date <= last_processed:
+                    if last_processed is not None and update_date <= last_processed:
                         continue
 
                     images = item.get("assets", {}).get("images", {})
@@ -132,7 +148,7 @@ if __name__ == "__main__":
                     )
 
                     processed[item_id] = update_date
-                except BaseException:
+                except Exception:
                     item_id_debug = definition.get("defid", "unknown")
                     logger.exception("Error processing item %s", item_id_debug)
                     continue
