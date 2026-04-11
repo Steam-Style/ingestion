@@ -6,6 +6,8 @@ from typing import Any, Optional
 from steam.client import SteamClient  # type: ignore
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from . import download_image, is_animated, is_transparent
 
@@ -40,6 +42,18 @@ class SteamFetcher:
         self.current_response: Optional[dict[str, Any]] = None
         self.total_count: Optional[int] = None
         self.session = requests.Session()
+        retry_policy = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=1.0,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods={"GET"},
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_policy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.apps: dict[Any, dict[str, Any]] = {}
 
         client = SteamClient()
@@ -61,16 +75,24 @@ class SteamFetcher:
         if cursor is None:
             self.apps = {}
 
-        response = self.session.get(API_BASE_URL, params={
-            "cursor": cursor,
-            "count": 10,
-        })
+        try:
+            response = self.session.get(
+                API_BASE_URL,
+                params={
+                    "cursor": cursor,
+                    "count": 10,
+                },
+                timeout=30,
+            )
 
-        response.raise_for_status()
-        data = response.json()
-        response_data = data.get("response", {})
-        definitions = response_data.get("definitions", [])
-        self.total_count = response_data.get("total_count", None)
+            response.raise_for_status()
+            data = response.json()
+            response_data = data.get("response", {})
+            definitions = response_data.get("definitions", [])
+            self.total_count = response_data.get("total_count", None)
+        except (requests.RequestException, ValueError) as exc:
+            print(f"Failed to fetch Steam Points Shop page: {exc}")
+            return None
 
         if definitions is not None and len(definitions) > 0:
             self.current_response = response_data
