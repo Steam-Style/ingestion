@@ -11,7 +11,7 @@ Embedding = List[float]
 
 
 class SiglipEmbedder:
-    def __init__(self, model_name: str, device: str = "cpu", use_fast: bool = True) -> None:
+    def __init__(self, model_name: str, device: str = "cpu", backend: str = "torchvision") -> None:
         self.model_name = model_name
         self.device = device
         self.processor = None
@@ -19,7 +19,7 @@ class SiglipEmbedder:
 
         try:
             self.processor = AutoProcessor.from_pretrained(
-                model_name, use_fast=use_fast)
+                model_name, backend=backend)
             self.model = AutoModel.from_pretrained(model_name)
             self.model.eval()
             self.model.to(self.device)
