@@ -1,0 +1,30 @@
+[project]
+name = "steam-style-ingestion"
+version = "0.1.0"
+description = "Handles the ingestion of data into the Qdrant vector database for the Steam Style project."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "litestar>=2.21.1",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.2.0",
+    "pillow-avif-plugin>=1.5.5",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "python-dotenv>=1.2.2",
+    "qdrant-client>=1.17.1",
+    "requests>=2.33.1",
+    "scikit-image>=0.26.0",
+    "scipy>=1.17.1",
+    "steam[client]",
+    "steam-style-embeddings",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.5.3",
+    "uvicorn[standard]>=0.44.0",
+]
+
+[tool.uv.sources]
+steam = { git = "https://github.com/solsticegamestudios/steam" }
+steam-style-embeddings = { path = "packages/steam-style-embeddings", editable = true }

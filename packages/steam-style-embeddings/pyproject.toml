@@ -1,0 +1,17 @@
+[project]
+name = "steam-style-embeddings"
+version = "0.1.0"
+description = "Reusable text and image embedding helpers for Steam Style projects."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pillow>=10.0.0", "torch>=2.2.0", "transformers>=4.41.0"]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

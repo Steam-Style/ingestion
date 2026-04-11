@@ -1,0 +1,30 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: steam-style-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: steam-style-ingestion
+    restart: "no"
+    depends_on:
+      - qdrant
+    environment:
+      DATABASE_URL: http://qdrant:6333
+      COLLECTION_NAME: Steam-Style-Items
+      DEVICE: cpu
+      MODEL_NAME: google/siglip2-base-patch16-224
+    volumes:
+      - hf_cache:/data/hf
+
+volumes:
+  qdrant_storage:
+  hf_cache:
