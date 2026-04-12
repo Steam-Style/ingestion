@@ -80,7 +80,7 @@ class SteamFetcher:
                 API_BASE_URL,
                 params={
                     "cursor": cursor,
-                    "count": 10,
+                    "count": 1000,
                 },
                 timeout=30,
             )
