@@ -31,6 +31,21 @@ class SiglipEmbedder:
     def is_ready(self) -> bool:
         return self.model is not None and self.processor is not None
 
+    def _normalize_features(self, output: object) -> torch.Tensor:
+        if isinstance(output, torch.Tensor):
+            features = output
+        elif hasattr(output, "pooler_output") and getattr(output, "pooler_output") is not None:
+            features = getattr(output, "pooler_output")
+        elif hasattr(output, "last_hidden_state") and getattr(output, "last_hidden_state") is not None:
+            features = getattr(output, "last_hidden_state")[:, 0]
+        else:
+            raise TypeError(
+                f"Unsupported model output type: {type(output).__name__}")
+
+        features = features.float()
+        features = features / features.norm(dim=-1, keepdim=True)
+        return features
+
     def get_text_embedding(self, text: str) -> Optional[Embedding]:
         if not self.is_ready():
             return None
@@ -49,10 +64,9 @@ class SiglipEmbedder:
             ).to(self.device)
 
             with torch.no_grad():
-                features = model.get_text_features(**inputs)
+                output = model.get_text_features(**inputs)
 
-            features = features.float()
-            features = features / features.norm(dim=-1, keepdim=True)
+            features = self._normalize_features(output)
             return features.squeeze(0).detach().cpu().tolist()
         except Exception as exc:
             logger.error("Error getting text embedding: %s", exc)
@@ -69,17 +83,18 @@ class SiglipEmbedder:
 
         try:
             if image.mode != "RGB":
+                if image.mode == "P" and isinstance(image.info.get("transparency"), bytes):
+                    image = image.convert("RGBA")
                 image = image.convert("RGB")
 
             inputs = processor(
                 images=image, return_tensors="pt").to(self.device)
 
             with torch.no_grad():
-                features = model.get_image_features(**inputs)
+                output = model.get_image_features(**inputs)
 
-            features = features.float()
-            features = features / features.norm(dim=-1, keepdim=True)
+            features = self._normalize_features(output)
             return features.squeeze(0).detach().cpu().tolist()
-        except (RuntimeError, ValueError, OSError) as exc:
+        except Exception as exc:
             logger.error("Error getting image embedding: %s", exc)
             return None
