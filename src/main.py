@@ -7,9 +7,8 @@ from typing import Optional
 
 from tqdm import tqdm
 from qdrant_client import QdrantClient, models
-import pillow_avif
 
-from utils.color_embed import ColorEmbedder
+from steam_style_embeddings import ColorEmbedder
 from config import settings
 from utils.models import get_image_embedding
 from utils import download_image
