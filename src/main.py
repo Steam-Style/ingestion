@@ -4,10 +4,7 @@ Handles ingestion of Steam item data, including image processing and vector data
 import logging
 from datetime import datetime
 from typing import Optional
-
-from tqdm import tqdm
 from qdrant_client import QdrantClient, models
-
 from steam_style_embeddings import ColorEmbedder
 from config import settings
 from utils.models import get_image_embedding
@@ -23,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-Embedder = ColorEmbedder(
+color_embedder = ColorEmbedder(
     hue_bins=settings.COLOR_HUE_BINS,
     sat_bins=settings.COLOR_SAT_BINS,
     val_bins=settings.COLOR_VAL_BINS,
@@ -50,7 +47,7 @@ if __name__ == "__main__":
                             distance=models.Distance.COSINE
                         ),
                         "color": models.VectorParams(
-                            size=Embedder.embedding_dimension,
+                            size=color_embedder.embedding_dimension,
                             distance=models.Distance.COSINE
                         )
                     }
@@ -130,7 +127,8 @@ if __name__ == "__main__":
                         continue
 
                     image_vector = get_image_embedding(image)
-                    color_vector = Embedder.image_to_embedding(image).tolist()
+                    color_vector = color_embedder.image_to_embedding(
+                        image).tolist()
 
                     if image_vector is None:
                         continue

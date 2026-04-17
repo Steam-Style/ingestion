@@ -8,28 +8,28 @@ from steam_style_embeddings import SiglipEmbedder
 DEVICE = settings.DEVICE
 logger = logging.getLogger(__name__)
 
-embedder = SiglipEmbedder(model_name=settings.MODEL_NAME, device=DEVICE)
+siglip_embedder = SiglipEmbedder(model_name=settings.MODEL_NAME, device=DEVICE)
 
 Embedding = List[float]
 
 
 def get_text_embedding(text: str) -> Optional[Embedding]:
-    if not embedder.is_ready():
+    if not siglip_embedder.is_ready():
         return None
 
     try:
-        return embedder.get_text_embedding(text)
+        return siglip_embedder.get_text_embedding(text)
     except Exception as e:
         logger.error("Error getting text embedding: %s", e)
         return None
 
 
 def get_image_embedding(image: Image.Image) -> Optional[Embedding]:
-    if not embedder.is_ready():
+    if not siglip_embedder.is_ready():
         return None
 
     try:
-        return embedder.get_image_embedding(image)
+        return siglip_embedder.get_image_embedding(image)
     except (RuntimeError, ValueError, OSError) as e:
         logger.error("Error getting image embedding: %s", e)
         return None
