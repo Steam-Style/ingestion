@@ -2,10 +2,11 @@
 Color embedding module using soft-assignment against a fixed HSV palette.
 """
 from typing import Union, List
+
 import numpy as np
 from numpy.typing import NDArray
-from skimage.color import rgb2hsv
 from PIL import Image
+from skimage.color import rgb2hsv
 
 
 class ColorEmbedder:

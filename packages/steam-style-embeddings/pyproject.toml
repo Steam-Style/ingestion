@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "Reusable text and image embedding helpers for Steam Style projects."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["pillow>=10.0.0", "torch>=2.2.0", "transformers>=4.41.0"]
+dependencies = [
+    "numpy>=2.0.0",
+    "pillow>=10.0.0",
+    "scikit-image>=0.24.0",
+    "torch>=2.2.0",
+    "transformers>=4.41.0",
+]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
