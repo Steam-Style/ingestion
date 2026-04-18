@@ -6,6 +6,8 @@ services:
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
+    networks:
+      - steam-style-shared
     volumes:
       - qdrant_storage:/qdrant/storage
 
@@ -18,13 +20,19 @@ services:
     depends_on:
       - qdrant
     environment:
-      DATABASE_URL: http://qdrant:6333
+      DATABASE_URL: http://steam-style-qdrant:6333
       COLLECTION_NAME: Steam-Style-Items
       DEVICE: cpu
       MODEL_NAME: google/siglip2-base-patch16-224
+    networks:
+      - steam-style-shared
     volumes:
       - hf_cache:/data/hf
 
 volumes:
   qdrant_storage:
   hf_cache:
+
+networks:
+  steam-style-shared:
+    external: true
