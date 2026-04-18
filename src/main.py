@@ -8,7 +8,7 @@ from qdrant_client import QdrantClient, models
 from steam_style_embeddings import ColorEmbedder
 from config import settings
 from utils.models import get_image_embedding
-from utils import download_image
+from utils import download_image, is_animated, is_transparent
 from utils.steam_fetcher import SteamFetcher
 
 
@@ -125,6 +125,19 @@ if __name__ == "__main__":
 
                     if image is None:
                         continue
+
+                    videos = item.get("assets", {}).get("videos", {})
+                    webm = videos.get("webm", {})
+                    mp4 = videos.get("mp4", {})
+                    has_video = any([
+                        webm.get("large"),
+                        webm.get("small"),
+                        mp4.get("large"),
+                        mp4.get("small"),
+                    ])
+
+                    item["animated"] = is_animated(image) or has_video
+                    item["transparent"] = is_transparent(image)
 
                     image_vector = get_image_embedding(image)
                     color_vector = color_embedder.image_to_embedding(

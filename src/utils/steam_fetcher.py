@@ -9,8 +9,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from . import download_image, is_animated, is_transparent
-
 API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardItems/v1"
 IMAGE_BASE_URLS = [
     "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/items",
@@ -186,17 +184,15 @@ class SteamFetcher:
             return self._generate_asset_url(app_id, community_item_data.get(key))
 
         small_image_url = get_url("item_image_small")
-        small_image = download_image(
-            small_image_url) if small_image_url else None
 
         has_video = any(get_url(key) for key in [
             "item_movie_webm_large", "item_movie_webm_small",
             "item_movie_mp4_large", "item_movie_mp4_small"
         ])
 
-        is_anim = (is_animated(small_image)
-                   if small_image else False) or has_video
-        is_trans = is_transparent(small_image) if small_image else False
+        item_animated = has_video
+        item_transparent = False
+        item_tiled = community_item_data.get("tiled", False)
 
         name = definition.get("name") or community_item_data.get("item_name")
         item_class = definition.get("community_item_class")
@@ -226,9 +222,9 @@ class SteamFetcher:
                 "internal_description": definition.get("internal_description"),
                 "category": category,
                 "point_cost": definition.get("point_cost"),
-                "animated": is_anim,
-                "transparent": is_trans,
-                "tiled": definition.get("is_tiled", False),
+                "animated": item_animated,
+                "transparent": item_transparent,
+                "tiled": item_tiled,
                 "assets": {
                     "images": {
                         "large": get_url("item_image_large"),
