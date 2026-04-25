@@ -58,6 +58,36 @@ class SteamFetcher:
         client.anonymous_login()
         self.client = client
 
+    def _prefetch_app_info(self, definitions: list[dict[str, Any]]) -> None:
+        """
+        Fetches app metadata for all uncached app IDs in the page with one request.
+        """
+        app_ids = {
+            app_id
+            for definition in definitions
+            for app_id in [definition.get("appid")]
+            if isinstance(app_id, int) and app_id not in self.apps
+        }
+
+        if not app_ids:
+            return
+
+        try:
+            product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
+                list(app_ids)
+            )
+            if not product_info or "apps" not in product_info:
+                return
+
+            apps_data = product_info.get("apps", {})
+            for app_id in app_ids:
+                app_info = apps_data.get(app_id)
+                if app_info:
+                    self.apps[app_id] = app_info
+
+        except BaseException:
+            pass
+
     def next_page(self) -> Optional[list[dict[str, Any]]]:
         """
         Fetches the next page of item definitions from the Steam Points Shop API.
@@ -88,12 +118,14 @@ class SteamFetcher:
             response_data = data.get("response", {})
             definitions = response_data.get("definitions", [])
             self.total_count = response_data.get("total_count", None)
+
         except (requests.RequestException, ValueError) as exc:
             print(f"Failed to fetch Steam Points Shop page: {exc}")
             return None
 
         if definitions is not None and len(definitions) > 0:
             self.current_response = response_data
+            self._prefetch_app_info(definitions)
             return definitions
 
         return None
@@ -117,11 +149,13 @@ class SteamFetcher:
         try:
             product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
                 [app_id])
+
             if product_info and "apps" in product_info:
                 app_info = product_info["apps"].get(app_id)
                 if app_info:
                     self.apps[app_id] = app_info
                     return app_info
+
         except BaseException:
             pass
 
@@ -141,6 +175,7 @@ class SteamFetcher:
         if path and app_id:
             base_url = IMAGE_BASE_URLS[1] if "/" in path else IMAGE_BASE_URLS[0]
             return f"{base_url}/{app_id}/{path}"
+
         return None
 
     def _parse_timestamp(self, timestamp: Optional[int]) -> Optional[str]:
