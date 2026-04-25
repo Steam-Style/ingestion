@@ -232,11 +232,11 @@ class SteamFetcher:
                     },
                     "videos": {
                         "webm": {
-                            "large": get_url("item_movie_webm_large"),
+                            "large": get_url("item_movie_webm"),
                             "small": get_url("item_movie_webm_small"),
                         },
                         "mp4": {
-                            "large": get_url("item_movie_mp4_large"),
+                            "large": get_url("item_movie_mp4"),
                             "small": get_url("item_movie_mp4_small"),
                         }
                     }
