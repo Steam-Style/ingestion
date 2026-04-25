@@ -116,7 +116,7 @@ if __name__ == "__main__":
                         continue
 
                     images = item.get("assets", {}).get("images", {})
-                    image_url = images.get("large") or images.get("small")
+                    image_url = images.get("small") or images.get("large")
 
                     if image_url is None:
                         continue
