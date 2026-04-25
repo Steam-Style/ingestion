@@ -8,6 +8,7 @@ from steam.client import SteamClient  # type: ignore
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from requests import utils
 
 API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardItems/v1"
 IMAGE_BASE_URLS = [
@@ -53,6 +54,10 @@ class SteamFetcher:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self.apps: dict[Any, dict[str, Any]] = {}
+
+        default_ua = utils.default_user_agent()
+        custom_ua = f"{default_ua} (Steam-Style/1.0)"
+        self.session.headers.update({"User-Agent": custom_ua})
 
         client = SteamClient()
         client.anonymous_login()
