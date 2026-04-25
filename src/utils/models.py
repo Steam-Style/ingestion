@@ -33,3 +33,14 @@ def get_image_embedding(image: Image.Image) -> Optional[Embedding]:
     except (RuntimeError, ValueError, OSError) as e:
         logger.error("Error getting image embedding: %s", e)
         return None
+
+
+def get_image_embeddings(images: List[Image.Image]) -> List[Optional[Embedding]]:
+    if not siglip_embedder.is_ready():
+        return [None for _ in images]
+
+    try:
+        return siglip_embedder.get_image_embeddings(images)
+    except (RuntimeError, ValueError, OSError) as e:
+        logger.error("Error getting image embeddings batch: %s", e)
+        return [None for _ in images]

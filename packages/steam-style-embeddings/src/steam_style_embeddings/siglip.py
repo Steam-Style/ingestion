@@ -98,3 +98,38 @@ class SiglipEmbedder:
         except Exception as exc:
             logger.error("Error getting image embedding: %s", exc)
             return None
+
+    def get_image_embeddings(self, images: List[Image.Image]) -> List[Optional[Embedding]]:
+        if not self.is_ready():
+            return [None for _ in images]
+
+        if not images:
+            return []
+
+        processor = self.processor
+        model = self.model
+        assert processor is not None
+        assert model is not None
+
+        try:
+            prepared_images: List[Image.Image] = []
+
+            for image in images:
+                current = image
+                if current.mode != "RGB":
+                    if current.mode == "P" and isinstance(current.info.get("transparency"), bytes):
+                        current = current.convert("RGBA")
+                    current = current.convert("RGB")
+                prepared_images.append(current)
+
+            inputs = processor(images=prepared_images,
+                               return_tensors="pt").to(self.device)
+
+            with torch.no_grad():
+                output = model.get_image_features(**inputs)
+
+            features = self._normalize_features(output)
+            return features.detach().cpu().tolist()
+        except Exception as exc:
+            logger.error("Error getting image embeddings batch: %s", exc)
+            return [None for _ in images]

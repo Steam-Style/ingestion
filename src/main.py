@@ -1,13 +1,15 @@
 """
 Handles ingestion of Steam item data, including image processing and vector database management.
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TypedDict
+from PIL import Image
 from qdrant_client import QdrantClient, models
 from steam_style_embeddings import ColorEmbedder
 from config import settings
-from utils.models import get_image_embedding
+from utils.models import get_image_embeddings
 from utils import download_image, is_animated, is_transparent
 from utils.steam_fetcher import SteamFetcher
 
@@ -18,6 +20,22 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PendingPoint(TypedDict):
+    item_id: int
+    payload: dict
+    image: Image.Image
+    color_vector: list[float]
+    update_date: datetime
+
+
+class DownloadCandidate(TypedDict):
+    item_id: int
+    payload: dict
+    image_url: str
+    has_video: bool
+    update_date: datetime
 
 
 color_embedder = ColorEmbedder(
@@ -87,6 +105,8 @@ if __name__ == "__main__":
 
         while definitions:
             points: list[models.PointStruct] = []
+            pending_points: list[PendingPoint] = []
+            download_candidates: list[DownloadCandidate] = []
 
             for definition in definitions:
                 try:
@@ -121,11 +141,6 @@ if __name__ == "__main__":
                     if image_url is None:
                         continue
 
-                    image = download_image(image_url)
-
-                    if image is None:
-                        continue
-
                     videos = item.get("assets", {}).get("videos", {})
                     webm = videos.get("webm", {})
                     mp4 = videos.get("mp4", {})
@@ -136,32 +151,81 @@ if __name__ == "__main__":
                         mp4.get("small"),
                     ])
 
-                    item["animated"] = is_animated(image) or has_video
+                    download_candidates.append(
+                        {
+                            "item_id": item_id,
+                            "payload": payload,
+                            "image_url": image_url,
+                            "has_video": has_video,
+                            "update_date": update_date,
+                        }
+                    )
+                except Exception:
+                    item_id_debug = definition.get("defid", "unknown")
+                    logger.exception("Error processing item %s", item_id_debug)
+                    continue
+
+            download_workers = max(1, settings.IMAGE_DOWNLOAD_WORKERS)
+            with ThreadPoolExecutor(max_workers=download_workers) as executor:
+                future_to_candidate = {
+                    executor.submit(download_image, candidate["image_url"]): candidate
+                    for candidate in download_candidates
+                }
+
+                for future in as_completed(future_to_candidate):
+                    candidate = future_to_candidate[future]
+                    try:
+                        image = future.result()
+                    except Exception as e:
+                        logger.warning(
+                            "Error downloading image for item %s: %s",
+                            candidate["item_id"],
+                            e,
+                        )
+                        continue
+
+                    if image is None:
+                        continue
+
+                    item = candidate["payload"].get("item", {})
+                    item["animated"] = is_animated(
+                        image) or candidate["has_video"]
                     item["transparent"] = is_transparent(image)
 
-                    image_vector = get_image_embedding(image)
                     color_vector = color_embedder.image_to_embedding(
                         image).tolist()
+                    pending_points.append(
+                        {
+                            "item_id": candidate["item_id"],
+                            "payload": candidate["payload"],
+                            "image": image,
+                            "color_vector": color_vector,
+                            "update_date": candidate["update_date"],
+                        }
+                    )
 
+            batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
+            for start in range(0, len(pending_points), batch_size):
+                chunk = pending_points[start:start + batch_size]
+                image_vectors = get_image_embeddings(
+                    [entry["image"] for entry in chunk])
+
+                for entry, image_vector in zip(chunk, image_vectors):
                     if image_vector is None:
                         continue
 
                     points.append(
                         models.PointStruct(
-                            id=item_id,
+                            id=entry["item_id"],
                             vector={
                                 "image": image_vector,
-                                "color": color_vector
+                                "color": entry["color_vector"]
                             },
-                            payload=payload
+                            payload=entry["payload"]
                         )
                     )
 
-                    processed[item_id] = update_date
-                except Exception:
-                    item_id_debug = definition.get("defid", "unknown")
-                    logger.exception("Error processing item %s", item_id_debug)
-                    continue
+                    processed[entry["item_id"]] = entry["update_date"]
 
             if points:
                 try:

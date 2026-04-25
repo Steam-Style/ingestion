@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "Steam-Style-Items"
     MODEL_NAME: str = "google/siglip2-base-patch16-224"
     IMAGE_EMBEDDING_DIM: int = 768
+    IMAGE_EMBEDDING_BATCH_SIZE: int = 16
+    IMAGE_DOWNLOAD_WORKERS: int = 12
     DEVICE: str = "cpu"
 
     COLOR_HUE_BINS: int = 24
