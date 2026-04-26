@@ -116,6 +116,7 @@ class SiglipEmbedder:
 
             for image in images:
                 current = image
+
                 if current.mode != "RGB":
                     if current.mode == "P" and isinstance(current.info.get("transparency"), bytes):
                         current = current.convert("RGBA")

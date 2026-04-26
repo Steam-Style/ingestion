@@ -43,7 +43,10 @@ def download_image(url: str) -> Optional[Image.Image]:
     try:
         response = _session.get(url, timeout=20)
         response.raise_for_status()
-        return Image.open(BytesIO(response.content))
+
+        with Image.open(BytesIO(response.content)) as image:
+            return image.copy()
+
     except requests.RequestException as e:
         logger.warning("Request error downloading image from %s: %s", url, e)
         return None
