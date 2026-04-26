@@ -78,17 +78,26 @@ class SteamFetcher:
             return
 
         try:
-            product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
-                list(app_ids)
-            )
-            if not product_info or "apps" not in product_info:
-                return
+            for _ in range(3):
+                product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
+                    list(app_ids)
+                )
 
-            apps_data = product_info.get("apps", {})
-            for app_id in app_ids:
-                app_info = apps_data.get(app_id)
-                if app_info:
-                    self.apps[app_id] = app_info
+                if not product_info or "apps" not in product_info:
+                    continue
+
+                apps_data = product_info.get("apps", {})
+
+                if not apps_data:
+                    continue
+
+                for app_id in app_ids:
+                    app_info = apps_data.get(app_id)
+
+                    if app_info:
+                        self.apps[app_id] = app_info
+
+                return
 
         except BaseException:
             pass
