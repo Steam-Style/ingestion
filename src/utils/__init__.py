@@ -5,7 +5,7 @@ import logging
 from typing import Optional, List
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageSequence
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -44,8 +44,10 @@ def download_image(url: str) -> Optional[Image.Image]:
         response = _session.get(url, timeout=20)
         response.raise_for_status()
 
-        with Image.open(BytesIO(response.content)) as image:
-            return image.copy()
+        buffer = BytesIO(response.content)
+        image = Image.open(buffer)
+        image._buffer = buffer  # type: ignore[attr-defined]
+        return image
 
     except requests.RequestException as e:
         logger.warning("Request error downloading image from %s: %s", url, e)
@@ -65,7 +67,8 @@ def is_animated(image: Image.Image) -> bool:
     Returns:
         bool: True if the image is animated, False otherwise.
     """
-    return getattr(image, "is_animated", False)
+    frame_count = getattr(image, "n_frames", 1)
+    return bool(getattr(image, "is_animated", False) or frame_count > 1)
 
 
 def is_transparent(image: Image.Image) -> bool:
@@ -78,8 +81,24 @@ def is_transparent(image: Image.Image) -> bool:
     Returns:
         bool: True if the image has transparency, False otherwise.
     """
-    if "transparency" in image.info:
-        return True
-    if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
-        return True
+    if is_animated(image):
+        for frame in ImageSequence.Iterator(image):
+            alpha = frame.convert("RGBA").getchannel("A")
+            extrema = alpha.getextrema()
+
+            if isinstance(extrema, tuple) and len(extrema) == 2:
+                min_alpha = extrema[0]
+
+                if isinstance(min_alpha, (int, float)) and min_alpha < 255:
+                    return True
+
+        return False
+
+    alpha = image.convert("RGBA").getchannel("A")
+    extrema = alpha.getextrema()
+
+    if isinstance(extrema, tuple) and len(extrema) == 2:
+        min_alpha = extrema[0]
+        return isinstance(min_alpha, (int, float)) and min_alpha < 255
+
     return False
