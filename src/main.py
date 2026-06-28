@@ -127,6 +127,7 @@ def main() -> None:
 
                 updated_at_value = payload.get(
                     "timestamps", {}).get("updated_at")
+
                 if updated_at_value is None:
                     continue
 
@@ -142,11 +143,13 @@ def main() -> None:
                     continue
 
                 last_processed = processed.get(item_id)
+
                 if last_processed is not None and update_date <= last_processed:
                     continue
 
                 images = item.get("assets", {}).get("images", {})
                 image_url = images.get("small") or images.get("large")
+
                 if image_url is None:
                     continue
 
@@ -207,6 +210,7 @@ def main() -> None:
                     )
 
                 batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
+
                 for batch_start in range(0, len(pending_points), batch_size):
                     batch = pending_points[batch_start:batch_start + batch_size]
                     batch_images = [entry["image"] for entry in batch]
@@ -247,7 +251,14 @@ def main() -> None:
             except (ConnectionError, TimeoutError, ValueError) as exc:
                 logger.warning("Failed to upload point to Qdrant: %s", exc)
 
-        definitions = fetcher.next_page()
+        attempts = 0
+
+        while True:
+            attempts += 1
+            definitions = fetcher.next_page()
+
+            if definitions is not None or attempts >= 10:
+                break
 
 
 if __name__ == "__main__":

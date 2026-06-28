@@ -133,8 +133,8 @@ class SteamFetcher:
             definitions = response_data.get("definitions", [])
             self.total_count = response_data.get("total_count", None)
 
-        except (requests.RequestException, ValueError) as exc:
-            print(f"Failed to fetch Steam Points Shop page: {exc}")
+        except (requests.RequestException, ValueError) as e:
+            print(f"Failed to fetch Steam Points Shop page: {e}")
             return None
 
         if definitions is not None and len(definitions) > 0:
