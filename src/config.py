@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str
+    DATABASE_URL: str = "http://qdrant:6333"
     COLLECTION_NAME: str = "Steam-Style-Items"
     MODEL_NAME: str = "google/siglip2-base-patch16-224"
     IMAGE_EMBEDDING_DIM: int = 768
