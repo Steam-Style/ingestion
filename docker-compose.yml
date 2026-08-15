@@ -6,8 +6,6 @@ services:
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
-    networks:
-      - steam-style-shared
     volumes:
       - qdrant_storage:/qdrant/storage
 
@@ -32,19 +30,13 @@ services:
       start_period: 30s
       retries: 3
     environment:
-      DATABASE_URL: http://steam-style-qdrant:6333
-      COLLECTION_NAME: Steam-Style-Items
-      DEVICE: cpu
-      MODEL_NAME: google/siglip2-base-patch16-224
-    networks:
-      - steam-style-shared
+      - DATABASE_URL=${DATABASE_URL:?}
+      - COLLECTION_NAME=${COLLECTION_NAME:-Steam-Style-Items}
+      - DEVICE=${DEVICE:-cpu}
+      - MODEL_NAME=${MODEL_NAME:-google/siglip2-base-patch16-224}
     volumes:
       - hf_cache:/data/hf
 
 volumes:
   qdrant_storage:
   hf_cache:
-
-networks:
-  steam-style-shared:
-    external: true
