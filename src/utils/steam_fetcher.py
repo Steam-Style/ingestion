@@ -3,7 +3,7 @@ Module to interact with the points shop API.
 """
 from datetime import datetime, timezone
 from typing import Any, Optional
-from steam.client import SteamClient  # type: ignore
+from steam.client import SteamClient
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -11,11 +11,7 @@ from urllib3.util.retry import Retry
 from requests import utils
 
 API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardItems/v1"
-IMAGE_BASE_URLS = [
-    "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/items",
-    "https://shared.fastly.steamstatic.com/community_assets/images/items"
-]
-ICON_BASE_URL = "https://shared.fastly.steamstatic.com/community_assets/images/apps"
+CDN_BASE_URL = "https://shared.fastly.steamstatic.com/community_assets/images"
 CATEGORIES = {
     0: "item bundles",
     1: "badge collections",
@@ -77,9 +73,9 @@ class SteamFetcher:
         if not app_ids:
             return
 
-        try:
-            for _ in range(3):
-                product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
+        for _ in range(3):
+            try:
+                product_info: Optional[dict[str, Any]] = self.client.get_product_info(
                     list(app_ids)
                 )
 
@@ -99,8 +95,9 @@ class SteamFetcher:
 
                 return
 
-        except BaseException:
-            pass
+            except BaseException:
+                self.client.anonymous_login()
+                pass
 
     def next_page(self) -> Optional[list[dict[str, Any]]]:
         """
@@ -161,7 +158,7 @@ class SteamFetcher:
             return self.apps[app_id]
 
         try:
-            product_info: Optional[dict[str, Any]] = self.client.get_product_info(  # type: ignore
+            product_info: Optional[dict[str, Any]] = self.client.get_product_info(
                 [app_id])
 
             if product_info and "apps" in product_info:
@@ -187,8 +184,7 @@ class SteamFetcher:
             Optional[str]: The full URL, or None.
         """
         if path and app_id:
-            base_url = IMAGE_BASE_URLS[1] if "/" in path else IMAGE_BASE_URLS[0]
-            return f"{base_url}/{app_id}/{path}"
+            return f"{CDN_BASE_URL}/items/{app_id}/{path}"
 
         return None
 
@@ -227,7 +223,7 @@ class SteamFetcher:
 
         app_name = common_info.get("name")
         app_icon_path = common_info.get("icon")
-        app_icon_url = f"{ICON_BASE_URL}/{app_id}/{app_icon_path}.jpg" if app_icon_path and app_id else None
+        app_icon_url = f"{CDN_BASE_URL}/apps/{app_id}/{app_icon_path}.jpg" if app_icon_path and app_id else None
 
         def get_url(key: str) -> Optional[str]:
             return self._generate_asset_url(app_id, community_item_data.get(key))
