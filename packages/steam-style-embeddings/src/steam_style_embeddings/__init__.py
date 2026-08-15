@@ -1,4 +1,4 @@
-from .siglip import Embedding, SiglipEmbedder
 from .color_embed import ColorEmbedder
+from .siglip import Embedding, SiglipEmbedder
 
-__all__ = ["Embedding", "SiglipEmbedder", "ColorEmbedder"]
+__all__ = ["ColorEmbedder", "Embedding", "SiglipEmbedder"]

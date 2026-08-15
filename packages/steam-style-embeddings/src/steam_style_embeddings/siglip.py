@@ -1,5 +1,4 @@
 import logging
-from typing import List, Optional
 
 import torch
 from PIL import Image
@@ -7,7 +6,7 @@ from transformers import AutoModel, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
-Embedding = List[float]
+Embedding = list[float]
 
 
 class SiglipEmbedder:
@@ -34,10 +33,10 @@ class SiglipEmbedder:
     def _normalize_features(self, output: object) -> torch.Tensor:
         if isinstance(output, torch.Tensor):
             features = output
-        elif hasattr(output, "pooler_output") and getattr(output, "pooler_output") is not None:
-            features = getattr(output, "pooler_output")
-        elif hasattr(output, "last_hidden_state") and getattr(output, "last_hidden_state") is not None:
-            features = getattr(output, "last_hidden_state")[:, 0]
+        elif hasattr(output, "pooler_output") and output.pooler_output is not None:
+            features = output.pooler_output
+        elif hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+            features = output.last_hidden_state[:, 0]
         else:
             raise TypeError(
                 f"Unsupported model output type: {type(output).__name__}")
@@ -46,7 +45,7 @@ class SiglipEmbedder:
         features = features / features.norm(dim=-1, keepdim=True)
         return features
 
-    def get_text_embedding(self, text: str) -> Optional[Embedding]:
+    def get_text_embedding(self, text: str) -> Embedding | None:
         if not self.is_ready():
             return None
 
@@ -72,7 +71,7 @@ class SiglipEmbedder:
             logger.error("Error getting text embedding: %s", exc)
             return None
 
-    def get_image_embedding(self, image: Image.Image) -> Optional[Embedding]:
+    def get_image_embedding(self, image: Image.Image) -> Embedding | None:
         if not self.is_ready():
             return None
 
@@ -99,7 +98,7 @@ class SiglipEmbedder:
             logger.error("Error getting image embedding: %s", exc)
             return None
 
-    def get_image_embeddings(self, images: List[Image.Image]) -> List[Optional[Embedding]]:
+    def get_image_embeddings(self, images: list[Image.Image]) -> list[Embedding | None]:
         if not self.is_ready():
             return [None for _ in images]
 
@@ -112,7 +111,7 @@ class SiglipEmbedder:
         assert model is not None
 
         try:
-            prepared_images: List[Image.Image] = []
+            prepared_images: list[Image.Image] = []
 
             for image in images:
                 current = image

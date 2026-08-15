@@ -1,19 +1,19 @@
 import logging
 
-from config import settings
-from typing import Optional, List
 from PIL import Image
 from steam_style_embeddings import SiglipEmbedder
+
+from config import settings
 
 DEVICE = settings.DEVICE
 logger = logging.getLogger(__name__)
 
 siglip_embedder = SiglipEmbedder(model_name=settings.MODEL_NAME, device=DEVICE)
 
-Embedding = List[float]
+Embedding = list[float]
 
 
-def get_text_embedding(text: str) -> Optional[Embedding]:
+def get_text_embedding(text: str) -> Embedding | None:
     if not siglip_embedder.is_ready():
         return None
 
@@ -24,7 +24,7 @@ def get_text_embedding(text: str) -> Optional[Embedding]:
         return None
 
 
-def get_image_embedding(image: Image.Image) -> Optional[Embedding]:
+def get_image_embedding(image: Image.Image) -> Embedding | None:
     if not siglip_embedder.is_ready():
         return None
 
@@ -35,7 +35,7 @@ def get_image_embedding(image: Image.Image) -> Optional[Embedding]:
         return None
 
 
-def get_image_embeddings(images: List[Image.Image]) -> List[Optional[Embedding]]:
+def get_image_embeddings(images: list[Image.Image]) -> list[Embedding | None]:
     if not siglip_embedder.is_ready():
         return [None for _ in images]
 

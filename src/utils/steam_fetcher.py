@@ -1,14 +1,14 @@
 """
 Module to interact with the points shop API.
 """
-from datetime import datetime, timezone
-from typing import Any, Optional
-from steam.client import SteamClient
+from datetime import UTC, datetime
+from typing import Any
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from requests import utils
+from requests.adapters import HTTPAdapter
+from steam.client import SteamClient
+from urllib3.util.retry import Retry
 
 API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardItems/v1"
 CDN_BASE_URL = "https://shared.fastly.steamstatic.com/community_assets/images"
@@ -34,8 +34,8 @@ class SteamFetcher:
     """
 
     def __init__(self) -> None:
-        self.current_response: Optional[dict[str, Any]] = None
-        self.total_count: Optional[int] = None
+        self.current_response: dict[str, Any] | None = None
+        self.total_count: int | None = None
         self.session = requests.Session()
         retry_policy = Retry(
             total=3,
@@ -75,7 +75,7 @@ class SteamFetcher:
 
         for _ in range(3):
             try:
-                product_info: Optional[dict[str, Any]] = self.client.get_product_info(
+                product_info: dict[str, Any] | None = self.client.get_product_info(
                     list(app_ids)
                 )
 
@@ -97,9 +97,8 @@ class SteamFetcher:
 
             except BaseException:
                 self.client.anonymous_login()
-                pass
 
-    def next_page(self) -> Optional[list[dict[str, Any]]]:
+    def next_page(self) -> list[dict[str, Any]] | None:
         """
         Fetches the next page of item definitions from the Steam Points Shop API.
 
@@ -141,7 +140,7 @@ class SteamFetcher:
 
         return None
 
-    def _get_app_info(self, app_id: Optional[int]) -> Optional[dict[str, Any]]:
+    def _get_app_info(self, app_id: int | None) -> dict[str, Any] | None:
         """
         Retrieves application info, fetching it if not cached.
 
@@ -158,7 +157,7 @@ class SteamFetcher:
             return self.apps[app_id]
 
         try:
-            product_info: Optional[dict[str, Any]] = self.client.get_product_info(
+            product_info: dict[str, Any] | None = self.client.get_product_info(
                 [app_id])
 
             if product_info and "apps" in product_info:
@@ -172,7 +171,7 @@ class SteamFetcher:
 
         return None
 
-    def _generate_asset_url(self, app_id: Optional[int], path: Optional[str]) -> Optional[str]:
+    def _generate_asset_url(self, app_id: int | None, path: str | None) -> str | None:
         """
         Generates a full URL for a Steam asset path.
 
@@ -188,7 +187,7 @@ class SteamFetcher:
 
         return None
 
-    def _parse_timestamp(self, timestamp: Optional[int]) -> Optional[str]:
+    def _parse_timestamp(self, timestamp: int | None) -> str | None:
         """
         Converts a unix timestamp to a UTC ISO-8601 string.
 
@@ -201,7 +200,7 @@ class SteamFetcher:
         if not timestamp:
             return None
 
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        return datetime.fromtimestamp(timestamp, tz=UTC).isoformat().replace("+00:00", "Z")
 
     def map_payload(self, definition: dict[str, Any]) -> dict[str, Any]:
         """
@@ -225,7 +224,7 @@ class SteamFetcher:
         app_icon_path = common_info.get("icon")
         app_icon_url = f"{CDN_BASE_URL}/apps/{app_id}/{app_icon_path}.jpg" if app_icon_path and app_id else None
 
-        def get_url(key: str) -> Optional[str]:
+        def get_url(key: str) -> str | None:
             return self._generate_asset_url(app_id, community_item_data.get(key))
 
         small_image_url = get_url("item_image_small")

@@ -1,20 +1,21 @@
 """
 Handles ingestion of Steam item data, including image processing and vector database management.
 """
-from concurrent.futures import ThreadPoolExecutor
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Optional, TypedDict
+from pathlib import Path
+from typing import Any, TypedDict
 
 from PIL import Image
 from qdrant_client import QdrantClient, models
+from steam_style_embeddings import ColorEmbedder
 
 from config import settings
-from steam_style_embeddings import ColorEmbedder
 from utils import download_image, is_animated, is_transparent
 from utils.models import get_image_embeddings
 from utils.steam_fetcher import SteamFetcher
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +23,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+heartbeat_file = Path("/tmp/heartbeat")
 
 
 class DownloadCandidate(TypedDict):
@@ -52,7 +54,7 @@ color_embedder = ColorEmbedder(
 
 
 def main() -> None:
-    client: Optional[QdrantClient] = None
+    client: QdrantClient | None = None
 
     if settings.DATABASE_URL:
         try:
@@ -187,6 +189,7 @@ def main() -> None:
                 )
 
             pending_points: list[PendingPoint] = []
+
             try:
                 for candidate, image in zip(chunk, downloaded_images):
                     if image is None:
@@ -248,6 +251,7 @@ def main() -> None:
                     collection_name=settings.COLLECTION_NAME,
                     points=points,
                 )
+                heartbeat_file.write_text(str(time.time()))
             except (ConnectionError, TimeoutError, ValueError) as exc:
                 logger.warning("Failed to upload point to Qdrant: %s", exc)
 

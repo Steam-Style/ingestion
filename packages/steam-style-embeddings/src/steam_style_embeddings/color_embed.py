@@ -1,7 +1,6 @@
 """
 Color embedding module using soft-assignment against a fixed HSV palette.
 """
-from typing import Union, List
 
 import numpy as np
 from numpy.typing import NDArray
@@ -85,7 +84,7 @@ class ColorEmbedder:
         return hsv_flat
 
     def image_to_embedding(
-        self, image_source: Union[str, Image.Image]
+        self, image_source: str | Image.Image
     ) -> NDArray[np.float64]:
         if isinstance(image_source, str):
             image = Image.open(image_source)
@@ -104,7 +103,7 @@ class ColorEmbedder:
         hsv_pixels = self._extract_chromatic_hsv(image, alpha_mask)
         return self._soft_histogram(hsv_pixels)
 
-    def query_to_embedding(self, hex_colors: List[str]) -> list[float]:
+    def query_to_embedding(self, hex_colors: list[str]) -> list[float]:
         rgb_colors = []
 
         for hex_str in hex_colors:

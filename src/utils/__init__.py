@@ -2,16 +2,15 @@
 Utility functions for image processing and analysis.
 """
 import logging
-from typing import Optional, List
 from io import BytesIO
+from typing import List, Optional
 
-from PIL import Image, ImageSequence
 import requests
+from PIL import Image, ImageSequence
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
-Embedding = List[float]
+Embedding = list[float]
 logger = logging.getLogger(__name__)
 
 _session = requests.Session()
@@ -30,7 +29,7 @@ _session.mount("http://", _adapter)
 _session.mount("https://", _adapter)
 
 
-def download_image(url: str) -> Optional[Image.Image]:
+def download_image(url: str) -> Image.Image | None:
     """
     Downloads an image from a URL and returns it as a PIL Image.
 
