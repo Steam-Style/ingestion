@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: steam-style-ingestion
-    restart: "no"
+    restart: unless-stopped
     depends_on:
       - qdrant
     environment:
