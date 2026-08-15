@@ -8,6 +8,10 @@ services:
       - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
+    networks:
+      coolify:
+        aliases:
+          - qdrant-stable
 
   ingestion:
     build:
@@ -40,3 +44,7 @@ services:
 volumes:
   qdrant_storage:
   hf_cache:
+
+networks:
+  coolify:
+    external: true
