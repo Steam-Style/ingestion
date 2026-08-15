@@ -19,6 +19,18 @@ services:
     restart: unless-stopped
     depends_on:
       - qdrant
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import time,sys; sys.exit(0 if time.time() - float(open('/tmp/heartbeat').read()) < 1800 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     environment:
       DATABASE_URL: http://steam-style-qdrant:6333
       COLLECTION_NAME: Steam-Style-Items
