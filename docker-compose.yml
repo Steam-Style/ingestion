@@ -18,6 +18,7 @@ services:
     depends_on:
       - qdrant
     cpu_shares: 256
+    oom_score_adj: 500
     healthcheck:
       test:
         [
