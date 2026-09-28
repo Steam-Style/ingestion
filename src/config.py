@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     IMAGE_DOWNLOAD_WORKERS: int = 12
     DEVICE: str = "cpu"
 
+    INGESTION_INTERVAL_SECONDS: int = 3600
+    INGESTION_RETRY_SECONDS: int = 300
+
     COLOR_HUE_BINS: int = 24
     COLOR_SAT_BINS: int = 3
     COLOR_VAL_BINS: int = 3

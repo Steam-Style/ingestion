@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.1
     container_name: steam-style-qdrant
     restart: unless-stopped
     ports:
@@ -17,6 +17,7 @@ services:
     restart: unless-stopped
     depends_on:
       - qdrant
+    cpu_shares: 256
     healthcheck:
       test:
         [
@@ -27,13 +28,14 @@ services:
         ]
       interval: 30s
       timeout: 5s
-      start_period: 30s
+      start_period: 5m
       retries: 3
     environment:
       - DATABASE_URL=${DATABASE_URL:?}
       - COLLECTION_NAME=${COLLECTION_NAME:-Steam-Style-Items}
       - DEVICE=${DEVICE:-cpu}
       - MODEL_NAME=${MODEL_NAME:-google/siglip2-base-patch16-224}
+      - INGESTION_INTERVAL_SECONDS=${INGESTION_INTERVAL_SECONDS:-3600}
     volumes:
       - hf_cache:/data/hf
 

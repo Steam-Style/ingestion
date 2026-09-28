@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import requests
+from gevent import Timeout
 from requests import utils
 from requests.adapters import HTTPAdapter
 from steam.client import SteamClient
@@ -95,50 +96,51 @@ class SteamFetcher:
 
                 return
 
-            except BaseException:
+            except (Exception, Timeout):
                 self.client.anonymous_login()
 
-    def next_page(self) -> list[dict[str, Any]] | None:
+    def reset(self) -> None:
+        """
+        Restarts pagination from the first page and clears the cached app metadata.
+        """
+        self.current_response = None
+        self.apps = {}
+
+    def next_page(self) -> list[dict[str, Any]]:
         """
         Fetches the next page of item definitions from the Steam Points Shop API.
 
         Returns:
-            Optional[list[dict]]: A list of item definitions, or None if no more pages.
+            list[dict[str, Any]]: A list of item definitions, empty once every page has been fetched.
+
+        Raises:
+            requests.RequestException: If the page could not be fetched.
+            ValueError: If the response is not valid JSON.
         """
         cursor = None
 
         if self.current_response is not None:
             cursor = self.current_response.get("next_cursor")
 
-        if cursor is None:
-            self.apps = {}
+        response = self.session.get(
+            API_BASE_URL,
+            params={
+                "cursor": cursor,
+                "count": 1000,
+            },
+            timeout=30,
+        )
 
-        try:
-            response = self.session.get(
-                API_BASE_URL,
-                params={
-                    "cursor": cursor,
-                    "count": 1000,
-                },
-                timeout=30,
-            )
+        response.raise_for_status()
+        response_data = response.json().get("response", {})
+        definitions = response_data.get("definitions", [])
+        self.total_count = response_data.get("total_count", None)
+        self.current_response = response_data
 
-            response.raise_for_status()
-            data = response.json()
-            response_data = data.get("response", {})
-            definitions = response_data.get("definitions", [])
-            self.total_count = response_data.get("total_count", None)
-
-        except (requests.RequestException, ValueError) as e:
-            print(f"Failed to fetch Steam Points Shop page: {e}")
-            return None
-
-        if definitions is not None and len(definitions) > 0:
-            self.current_response = response_data
+        if definitions:
             self._prefetch_app_info(definitions)
-            return definitions
 
-        return None
+        return definitions
 
     def _get_app_info(self, app_id: int | None) -> dict[str, Any] | None:
         """
@@ -166,7 +168,7 @@ class SteamFetcher:
                     self.apps[app_id] = app_info
                     return app_info
 
-        except BaseException:
+        except (Exception, Timeout):
             pass
 
         return None

@@ -26,13 +26,7 @@ git clone https://github.com/Steam-Style/ingestion.git
  cd ingestion
 ```
 
-### 3. Create the shared Docker network
-
-```bash
-docker network create steam-style-shared
-```
-
-### 4. Start the services using Docker Compose
+### 3. Start the services using Docker Compose
 
 ```bash
 docker compose up -d
