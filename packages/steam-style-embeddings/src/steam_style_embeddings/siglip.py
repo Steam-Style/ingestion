@@ -10,7 +10,14 @@ Embedding = list[float]
 
 
 class SiglipEmbedder:
-    def __init__(self, model_name: str, device: str = "cpu", backend: str = "torchvision") -> None:
+    def __init__(
+        self,
+        model_name: str,
+        device: str = "cpu",
+        backend: str = "torchvision",
+        load_text: bool = True,
+        load_vision: bool = True,
+    ) -> None:
         self.model_name = model_name
         self.device = device
         self.processor = None
@@ -20,6 +27,13 @@ class SiglipEmbedder:
             self.processor = AutoProcessor.from_pretrained(
                 model_name, backend=backend)
             self.model = AutoModel.from_pretrained(model_name)
+
+            # Free the towers that will not be used, the text tower alone is most of the model's memory
+            if not load_text:
+                self.model.text_model = None
+            if not load_vision:
+                self.model.vision_model = None
+
             self.model.eval()
             self.model.to(self.device)
         except Exception as exc:

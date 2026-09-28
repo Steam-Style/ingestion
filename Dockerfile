@@ -1,24 +1,29 @@
 FROM python:3.14-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_NO_CACHE=1 \
-    HF_HOME=/data/hf
+    HF_HOME=/data/hf \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
 RUN apt-get update \
-    ; apt-get install -y --no-install-recommends git \
-    ; rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --frozen --no-install-project --no-install-local
 
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
 COPY packages ./packages
+COPY src ./src
 
-RUN uv sync --frozen --no-cache
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
-CMD ["uv", "run", "python", "src/main.py"]
+CMD ["python", "src/main.py"]

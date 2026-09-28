@@ -3,14 +3,12 @@ Utility functions for image processing and analysis.
 """
 import logging
 from io import BytesIO
-from typing import List, Optional
 
 import requests
 from PIL import Image, ImageSequence
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-Embedding = list[float]
 logger = logging.getLogger(__name__)
 
 _session = requests.Session()
@@ -81,17 +79,21 @@ def is_transparent(image: Image.Image) -> bool:
         bool: True if the image has transparency, False otherwise.
     """
     if is_animated(image):
-        for frame in ImageSequence.Iterator(image):
-            alpha = frame.convert("RGBA").getchannel("A")
-            extrema = alpha.getextrema()
+        try:
+            for frame in ImageSequence.Iterator(image):
+                alpha = frame.convert("RGBA").getchannel("A")
+                extrema = alpha.getextrema()
 
-            if isinstance(extrema, tuple) and len(extrema) == 2:
-                min_alpha = extrema[0]
+                if isinstance(extrema, tuple) and len(extrema) == 2:
+                    min_alpha = extrema[0]
 
-                if isinstance(min_alpha, (int, float)) and min_alpha < 255:
-                    return True
+                    if isinstance(min_alpha, (int, float)) and min_alpha < 255:
+                        return True
 
-        return False
+            return False
+        finally:
+            # Rewind so later processing uses the first frame rather than wherever the loop stopped
+            image.seek(0)
 
     alpha = image.convert("RGBA").getchannel("A")
     extrema = alpha.getextrema()

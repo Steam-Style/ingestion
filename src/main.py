@@ -4,7 +4,6 @@ Handles ingestion of Steam item data, including image processing and vector data
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -14,7 +13,7 @@ from steam_style_embeddings import ColorEmbedder
 
 from config import settings
 from utils import download_image, is_animated, is_transparent
-from utils.models import get_image_embeddings
+from utils.models import get_image_embeddings, is_model_ready
 from utils.steam_fetcher import SteamFetcher
 
 logging.basicConfig(
@@ -25,21 +24,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 heartbeat_file = Path("/tmp/heartbeat")
 
+PAYLOAD_INDEXES = {
+    "timestamps.created_at": models.PayloadSchemaType.DATETIME,
+    "timestamps.updated_at": models.PayloadSchemaType.DATETIME,
+    "item.animated": models.PayloadSchemaType.BOOL,
+    "item.transparent": models.PayloadSchemaType.BOOL,
+    "item.tiled": models.PayloadSchemaType.BOOL,
+    "item.id": models.PayloadSchemaType.INTEGER,
+    "item.name": models.PayloadSchemaType.KEYWORD,
+    "item.category": models.PayloadSchemaType.KEYWORD,
+    "app.id": models.PayloadSchemaType.INTEGER,
+}
+
 
 class DownloadCandidate(TypedDict):
     item_id: int
     payload: dict[str, Any]
     image_url: str
-    has_video: bool
-    update_date: datetime
-
-
-class PendingPoint(TypedDict):
-    item_id: int
-    payload: dict[str, Any]
-    image: Image.Image
-    color_vector: list[float]
-    update_date: datetime
 
 
 color_embedder = ColorEmbedder(
@@ -53,216 +54,238 @@ color_embedder = ColorEmbedder(
 )
 
 
-def main() -> None:
-    client: QdrantClient | None = None
+def write_heartbeat() -> None:
+    heartbeat_file.write_text(str(time.time()))
 
-    if settings.DATABASE_URL:
-        try:
-            client = QdrantClient(url=settings.DATABASE_URL)
-            if not client.collection_exists(collection_name=settings.COLLECTION_NAME):
-                client.create_collection(
-                    collection_name=settings.COLLECTION_NAME,
-                    vectors_config={
-                        "image": models.VectorParams(
-                            size=settings.IMAGE_EMBEDDING_DIM,
-                            distance=models.Distance.COSINE,
-                        ),
-                        "color": models.VectorParams(
-                            size=color_embedder.embedding_dimension,
-                            distance=models.Distance.COSINE,
-                        ),
-                    },
-                )
-        except Exception as exc:
-            logger.warning("Could not initialize Qdrant client: %s", exc)
-            client = None
-    else:
-        logger.warning(
-            "Qdrant environment variables missing; skipping vector DB upload.")
 
-    if client is None:
-        return
+def sleep_with_heartbeat(seconds: int) -> None:
+    """
+    Sleeps for the given number of seconds while keeping the healthcheck heartbeat fresh.
+    """
+    deadline = time.monotonic() + seconds
 
-    indexes = [
-        ("timestamps.created_at", models.PayloadSchemaType.DATETIME),
-        ("timestamps.updated_at", models.PayloadSchemaType.DATETIME),
-        ("item.animated", models.PayloadSchemaType.BOOL),
-        ("item.transparent", models.PayloadSchemaType.BOOL),
-        ("item.tiled", models.PayloadSchemaType.BOOL),
-        ("item.id", models.PayloadSchemaType.INTEGER),
-        ("item.category", models.PayloadSchemaType.KEYWORD),
-    ]
+    while (remaining := deadline - time.monotonic()) > 0:
+        write_heartbeat()
+        time.sleep(min(60, remaining))
 
-    for field_name, schema in indexes:
-        try:
+
+def ensure_collection(client: QdrantClient) -> None:
+    """
+    Creates the collection and any payload indexes that do not exist yet.
+    """
+    if not client.collection_exists(collection_name=settings.COLLECTION_NAME):
+        client.create_collection(
+            collection_name=settings.COLLECTION_NAME,
+            vectors_config={
+                "image": models.VectorParams(
+                    size=settings.IMAGE_EMBEDDING_DIM,
+                    distance=models.Distance.COSINE,
+                ),
+                "color": models.VectorParams(
+                    size=color_embedder.embedding_dimension,
+                    distance=models.Distance.COSINE,
+                ),
+            },
+        )
+
+    payload_schema = client.get_collection(
+        collection_name=settings.COLLECTION_NAME).payload_schema
+
+    for field_name, schema in PAYLOAD_INDEXES.items():
+        if field_name not in payload_schema:
             client.create_payload_index(
                 collection_name=settings.COLLECTION_NAME,
                 field_name=field_name,
                 field_schema=schema,
+                wait=True,
             )
-        except Exception as exc:
-            logger.warning(
-                "Could not create payload index for %s: %s", field_name, exc)
 
-    fetcher = SteamFetcher()
-    definitions = fetcher.next_page()
-    processed: dict[int, datetime] = {}
-    download_workers = max(1, settings.IMAGE_DOWNLOAD_WORKERS)
-    pipeline_batch_size = max(
-        1,
-        min(settings.IMAGE_DOWNLOAD_WORKERS,
-            settings.IMAGE_EMBEDDING_BATCH_SIZE),
-    )
 
-    while definitions:
-        points: list[models.PointStruct] = []
-        download_candidates: list[DownloadCandidate] = []
+def get_indexed_items(client: QdrantClient) -> dict[int, str | None]:
+    """
+    Retrieves the Steam update timestamp of every item already stored in the database.
+    """
+    indexed: dict[int, str | None] = {}
+    offset: models.ExtendedPointId | None = None
 
-        for definition in definitions:
-            try:
-                payload = fetcher.map_payload(definition)
-                item = payload.get("item", {})
-                item_id = item.get("id")
+    while True:
+        points, offset = client.scroll(
+            collection_name=settings.COLLECTION_NAME,
+            limit=1000,
+            offset=offset,
+            with_payload=["timestamps"],
+            with_vectors=False,
+        )
 
-                if item_id is None:
-                    continue
+        for point in points:
+            payload = point.payload or {}
+            indexed[int(point.id)] = payload.get(
+                "timestamps", {}).get("updated_at")
 
-                updated_at_value = payload.get(
-                    "timestamps", {}).get("updated_at")
+        if offset is None:
+            return indexed
 
-                if updated_at_value is None:
-                    continue
 
-                try:
-                    update_date = datetime.fromisoformat(
-                        updated_at_value.replace("Z", "+00:00"))
-                except ValueError:
-                    logger.warning(
-                        "Skipping item %s due to invalid updated_at: %s",
-                        item_id,
-                        updated_at_value,
-                    )
-                    continue
+def get_download_candidates(
+    fetcher: SteamFetcher,
+    definitions: list[dict[str, Any]],
+    indexed: dict[int, str | None],
+) -> list[DownloadCandidate]:
+    """
+    Maps a page of item definitions and keeps the items that are new or were updated since they were indexed.
+    """
+    candidates: list[DownloadCandidate] = []
 
-                last_processed = processed.get(item_id)
+    for definition in definitions:
+        try:
+            payload = fetcher.map_payload(definition)
+            item = payload["item"]
+            item_id = item["id"]
+            updated_at = payload["timestamps"]["updated_at"]
 
-                if last_processed is not None and update_date <= last_processed:
-                    continue
-
-                images = item.get("assets", {}).get("images", {})
-                image_url = images.get("small") or images.get("large")
-
-                if image_url is None:
-                    continue
-
-                videos = item.get("assets", {}).get("videos", {})
-                webm = videos.get("webm", {})
-                mp4 = videos.get("mp4", {})
-                has_video = any([
-                    webm.get("large"),
-                    webm.get("small"),
-                    mp4.get("large"),
-                    mp4.get("small"),
-                ])
-
-                download_candidates.append(
-                    {
-                        "item_id": item_id,
-                        "payload": payload,
-                        "image_url": image_url,
-                        "has_video": has_video,
-                        "update_date": update_date,
-                    }
-                )
-            except Exception:
-                item_id_debug = definition.get("defid", "unknown")
-                logger.exception("Error processing item %s", item_id_debug)
+            if item_id is None or updated_at is None:
                 continue
 
-        for start in range(0, len(download_candidates), pipeline_batch_size):
-            chunk = download_candidates[start:start + pipeline_batch_size]
+            if item_id in indexed and indexed[item_id] == updated_at:
+                continue
 
-            with ThreadPoolExecutor(max_workers=download_workers) as executor:
-                downloaded_images = list(
-                    executor.map(download_image, [
-                                 candidate["image_url"] for candidate in chunk])
-                )
+            images = item["assets"]["images"]
+            image_url = images["small"] or images["large"]
 
-            pending_points: list[PendingPoint] = []
+            if image_url is None:
+                continue
 
-            try:
-                for candidate, image in zip(chunk, downloaded_images):
-                    if image is None:
-                        continue
+            candidates.append(
+                {
+                    "item_id": item_id,
+                    "payload": payload,
+                    "image_url": image_url,
+                }
+            )
+        except Exception:
+            logger.exception("Error processing item %s",
+                             definition.get("defid", "unknown"))
 
-                    item = candidate["payload"].get("item", {})
-                    item["animated"] = is_animated(
-                        image) or candidate["has_video"]
-                    item["transparent"] = is_transparent(image)
+    return candidates
 
-                    color_vector = color_embedder.image_to_embedding(
-                        image).tolist()
-                    pending_points.append(
-                        {
-                            "item_id": candidate["item_id"],
-                            "payload": candidate["payload"],
-                            "image": image,
-                            "color_vector": color_vector,
-                            "update_date": candidate["update_date"],
-                        }
-                    )
 
-                batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
+def build_points(
+    candidates: list[DownloadCandidate],
+    images: list[Image.Image | None],
+) -> list[models.PointStruct]:
+    """
+    Computes the color and image embeddings of downloaded images and builds the points to upload.
+    """
+    prepared: list[tuple[DownloadCandidate, Image.Image, list[float]]] = []
 
-                for batch_start in range(0, len(pending_points), batch_size):
-                    batch = pending_points[batch_start:batch_start + batch_size]
-                    batch_images = [entry["image"] for entry in batch]
-                    image_vectors = get_image_embeddings(batch_images)
+    for candidate, image in zip(candidates, images):
+        if image is None:
+            continue
 
-                    for entry, image_vector in zip(batch, image_vectors):
-                        if image_vector is None:
-                            continue
+        try:
+            item = candidate["payload"]["item"]
+            item["animated"] = is_animated(image) or item["animated"]
+            item["transparent"] = is_transparent(image)
+            color_vector = color_embedder.image_to_embedding(image).tolist()
+        except Exception:
+            logger.exception("Error processing image of item %s",
+                             candidate["item_id"])
+            continue
 
-                        item_id = entry["item_id"]
-                        payload = entry["payload"]
-                        color_vector = entry["color_vector"]
-                        update_date = entry["update_date"]
+        prepared.append((candidate, image, color_vector))
 
-                        points.append(
-                            models.PointStruct(
-                                id=item_id,
-                                vector={
-                                    "image": image_vector,
-                                    "color": color_vector,
-                                },
-                                payload=payload,
-                            )
-                        )
+    image_vectors = get_image_embeddings([image for _, image, _ in prepared])
 
-                        processed[item_id] = update_date
-            finally:
-                for image in downloaded_images:
-                    if image is not None:
-                        image.close()
+    return [
+        models.PointStruct(
+            id=candidate["item_id"],
+            vector={
+                "image": image_vector,
+                "color": color_vector,
+            },
+            payload=candidate["payload"],
+        )
+        for (candidate, _, color_vector), image_vector in zip(prepared, image_vectors)
+        if image_vector is not None
+    ]
+
+
+def ingest_page(
+    client: QdrantClient,
+    fetcher: SteamFetcher,
+    executor: ThreadPoolExecutor,
+    definitions: list[dict[str, Any]],
+    indexed: dict[int, str | None],
+) -> int:
+    """
+    Downloads, embeds and uploads the new or updated items of a page in small batches.
+    """
+    candidates = get_download_candidates(fetcher, definitions, indexed)
+    batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
+    uploaded = 0
+
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start:start + batch_size]
+        images = list(executor.map(
+            download_image, [candidate["image_url"] for candidate in batch]))
+
+        try:
+            points = build_points(batch, images)
+        finally:
+            for image in images:
+                if image is not None:
+                    image.close()
 
         if points:
-            try:
-                client.upload_points(
-                    collection_name=settings.COLLECTION_NAME,
-                    points=points,
-                )
-                heartbeat_file.write_text(str(time.time()))
-            except (ConnectionError, TimeoutError, ValueError) as exc:
-                logger.warning("Failed to upload point to Qdrant: %s", exc)
+            client.upload_points(
+                collection_name=settings.COLLECTION_NAME,
+                points=points,
+                wait=True,
+            )
+            uploaded += len(points)
+            write_heartbeat()
 
-        attempts = 0
+    return uploaded
 
+
+def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolExecutor) -> None:
+    """
+    Walks through every page of the points shop once and indexes new or updated items.
+    """
+    ensure_collection(client)
+    indexed = get_indexed_items(client)
+    logger.info("Found %d indexed items in the database", len(indexed))
+
+    fetcher.reset()
+    uploaded = 0
+
+    while definitions := fetcher.next_page():
+        uploaded += ingest_page(client, fetcher, executor,
+                                definitions, indexed)
+        write_heartbeat()
+
+    logger.info("Ingestion cycle finished, indexed %d new or updated items",
+                uploaded)
+
+
+def main() -> None:
+    if not is_model_ready():
+        raise SystemExit(f"Could not load embedding model {settings.MODEL_NAME}")
+
+    write_heartbeat()
+    client = QdrantClient(url=settings.DATABASE_URL, timeout=60)
+    fetcher = SteamFetcher()
+
+    with ThreadPoolExecutor(max_workers=max(1, settings.IMAGE_DOWNLOAD_WORKERS)) as executor:
         while True:
-            attempts += 1
-            definitions = fetcher.next_page()
+            try:
+                run_cycle(client, fetcher, executor)
+                delay = settings.INGESTION_INTERVAL_SECONDS
+            except Exception:
+                logger.exception("Ingestion cycle failed")
+                delay = settings.INGESTION_RETRY_SECONDS
 
-            if definitions is not None or attempts >= 10:
-                break
+            sleep_with_heartbeat(delay)
 
 
 if __name__ == "__main__":
