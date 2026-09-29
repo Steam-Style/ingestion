@@ -1,6 +1,9 @@
 """
 Module to interact with the points shop API.
 """
+import logging
+import re
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,8 +14,20 @@ from requests.adapters import HTTPAdapter
 from steam.client import SteamClient
 from urllib3.util.retry import Retry
 
+from config import settings
+
+logger = logging.getLogger(__name__)
+
 API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardItems/v1"
 CDN_BASE_URL = "https://shared.fastly.steamstatic.com/community_assets/images"
+PROFILE_THEMES_CSS_URL = "https://community.fastly.steamstatic.com/public/css/skin_1/profilev2.css"
+PROFILE_PREVIEW_INTERVAL_SECONDS = 5
+BUNDLE_PARTS = {
+    3: "background",
+    13: "mini_profile",
+    15: "avatar",
+    14: "frame",
+}
 CATEGORIES = {
     0: "item bundles",
     1: "badge collections",
@@ -51,6 +66,8 @@ class SteamFetcher:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self.apps: dict[Any, dict[str, Any]] = {}
+        self.named_themes: dict[str, dict[str, str]] | None = None
+        self.last_preview_request = 0.0
 
         default_ua = utils.default_user_agent()
         custom_ua = f"{default_ua} (Steam-Style/1.0)"
@@ -105,6 +122,7 @@ class SteamFetcher:
         """
         self.current_response = None
         self.apps = {}
+        self.named_themes = None
 
     def next_page(self) -> list[dict[str, Any]]:
         """
@@ -189,6 +207,37 @@ class SteamFetcher:
 
         return None
 
+    def _map_assets(self, app_id: int | None, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Maps the image and video paths of an item definition to full URLs.
+
+        Args:
+            app_id (Optional[int]): The application ID.
+            data (dict[str, Any]): The community item data of the definition.
+
+        Returns:
+            dict[str, Any]: The images and videos of the item.
+        """
+        def get_url(key: str) -> str | None:
+            return self._generate_asset_url(app_id, data.get(key))
+
+        return {
+            "images": {
+                "large": get_url("item_image_large"),
+                "small": get_url("item_image_small"),
+            },
+            "videos": {
+                "webm": {
+                    "large": get_url("item_movie_webm"),
+                    "small": get_url("item_movie_webm_small"),
+                },
+                "mp4": {
+                    "large": get_url("item_movie_mp4"),
+                    "small": get_url("item_movie_mp4_small"),
+                },
+            },
+        }
+
     def _parse_timestamp(self, timestamp: int | None) -> str | None:
         """
         Converts a unix timestamp to a UTC ISO-8601 string.
@@ -226,15 +275,9 @@ class SteamFetcher:
         app_icon_path = common_info.get("icon")
         app_icon_url = f"{CDN_BASE_URL}/apps/{app_id}/{app_icon_path}.jpg" if app_icon_path and app_id else None
 
-        def get_url(key: str) -> str | None:
-            return self._generate_asset_url(app_id, community_item_data.get(key))
-
-        small_image_url = get_url("item_image_small")
-
-        has_video = any(get_url(key) for key in [
-            "item_movie_webm_large", "item_movie_webm_small",
-            "item_movie_mp4_large", "item_movie_mp4_small"
-        ])
+        assets = self._map_assets(app_id, community_item_data)
+        has_video = any(
+            url for video in assets["videos"].values() for url in video.values())
 
         item_animated = has_video
         item_transparent = False
@@ -271,22 +314,7 @@ class SteamFetcher:
                 "animated": item_animated,
                 "transparent": item_transparent,
                 "tiled": item_tiled,
-                "assets": {
-                    "images": {
-                        "large": get_url("item_image_large"),
-                        "small": small_image_url,
-                    },
-                    "videos": {
-                        "webm": {
-                            "large": get_url("item_movie_webm"),
-                            "small": get_url("item_movie_webm_small"),
-                        },
-                        "mp4": {
-                            "large": get_url("item_movie_mp4"),
-                            "small": get_url("item_movie_mp4_small"),
-                        }
-                    }
-                },
+                "assets": assets,
             },
             "app": {
                 "id": app_id,
@@ -307,7 +335,123 @@ class SteamFetcher:
                 "created_at": self._parse_timestamp(definition.get("timestamp_created")),
                 "updated_at": self._parse_timestamp(definition.get("timestamp_updated")),
                 "available_at": self._parse_timestamp(definition.get("timestamp_available")),
-                "unavailable_at": self._parse_timestamp(definition.get("timestamp_unavailable")),
+                "unavailable_at": self._parse_timestamp(definition.get("timestamp_available_end")),
                 "usable_duration_seconds": definition.get("usable_duration"),
             },
         }
+
+    def _parse_theme_colors(self, css: str) -> dict[str, str]:
+        """
+        Parses the CSS variables of a profile theme rule into a dictionary.
+
+        Args:
+            css (str): The body of a theme's CSS rule.
+
+        Returns:
+            dict[str, str]: The colors, keyed by variable name without the leading dashes.
+        """
+        return {
+            name: value.strip()
+            for name, value in re.findall(r"--([a-z0-9-]+)\s*:\s*([^;]+);", css)
+        }
+
+    def _get_named_theme(self, theme_id: str) -> dict[str, str] | None:
+        """
+        Retrieves the colors of one of Steam's named profile themes from the profile stylesheet.
+
+        Args:
+            theme_id (str): The theme ID, such as "Midnight".
+
+        Returns:
+            Optional[dict[str, str]]: The theme colors, or None if the theme is unknown.
+        """
+        if self.named_themes is None:
+            response = self.session.get(PROFILE_THEMES_CSS_URL, timeout=30)
+            response.raise_for_status()
+            self.named_themes = {
+                name: self._parse_theme_colors(body)
+                for name, body in re.findall(r"body\.(\w+?)Theme\s*\{([^}]*)\}", response.text)
+            }
+
+        return self.named_themes.get(theme_id)
+
+    def _get_game_profile_theme(self, app_id: int | None, item_type: int | None) -> dict[str, str] | None:
+        """
+        Retrieves the colors of a game specific profile theme, which Steam only includes on profile pages.
+
+        Args:
+            app_id (Optional[int]): The application ID of the game profile.
+            item_type (Optional[int]): The community item type of the game profile.
+
+        Returns:
+            Optional[dict[str, str]]: The theme colors, or None if the preview page has none.
+        """
+        wait = PROFILE_PREVIEW_INTERVAL_SECONDS - (time.monotonic() - self.last_preview_request)
+        
+        if wait > 0:
+            time.sleep(wait)
+
+        self.last_preview_request = time.monotonic()
+        
+        response = self.session.get(
+            settings.PROFILE_PREVIEW_URL,
+            params={"previewprofile": 1, "appid": app_id, "itemtype": item_type},
+            timeout=30,
+        )
+        response.raise_for_status()
+        match = re.search(r"body\.GameProfileTheme\s*\{([^}]*)\}", response.text)
+
+        return self._parse_theme_colors(match.group(1)) if match else None
+
+    def get_game_profile(self, definition: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Retrieves the theme and the bundled items a game profile applies to a Steam profile.
+
+        Args:
+            definition (dict[str, Any]): The raw item definition of the game profile.
+
+        Returns:
+            Optional[dict[str, Any]]: The theme and bundled item assets, or None if they could not be fetched.
+        """
+        bundle_ids = definition.get("bundle_defids") or []
+        theme_id = definition.get("community_item_data", {}).get("profile_theme_id")
+        parts: list[dict[str, Any]] = []
+
+        try:
+            if bundle_ids:
+                response = self.session.get(
+                    API_BASE_URL,
+                    params={
+                        "include_direct_purchase_disabled": "true",
+                        **{f"definitionids[{index}]": bundle_id for index, bundle_id in enumerate(bundle_ids)},
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                parts = response.json().get("response", {}).get("definitions", [])
+
+            if theme_id == "GameProfile":
+                colors = self._get_game_profile_theme(
+                    definition.get("appid"), definition.get("community_item_type"))
+            else:
+                colors = self._get_named_theme(theme_id) if theme_id else None
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("Could not fetch game profile %s: %s", definition.get("defid"), e)
+            return None
+
+        profile: dict[str, Any] = {
+            "theme": {"name": theme_id, "colors": colors},
+            **{name: None for name in BUNDLE_PARTS.values()},
+        }
+
+        for part in parts:
+            name = BUNDLE_PARTS.get(part.get("community_item_class"))
+
+            if name:
+                data = part.get("community_item_data", {})
+                profile[name] = {
+                    **self._map_assets(part.get("appid"), data),
+                    "animated": bool(data.get("animated")),
+                }
+
+        return profile

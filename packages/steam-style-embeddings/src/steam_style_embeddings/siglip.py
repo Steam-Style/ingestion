@@ -34,7 +34,6 @@ class SiglipEmbedder:
         self.max_text_length: int | None = None
 
         try:
-            # Only load the parts that will be used, the text tower and tokenizer are most of the memory
             if load_text and load_vision:
                 self.processor = AutoProcessor.from_pretrained(
                     model_name, backend=backend)
@@ -50,7 +49,6 @@ class SiglipEmbedder:
                 raise ValueError(
                     "At least one of load_text and load_vision must be set")
 
-            # The tokenizer alone does not pad to the length the model was trained with
             if load_text:
                 text_config = getattr(
                     self.model.config, "text_config", self.model.config)

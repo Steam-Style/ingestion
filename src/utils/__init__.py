@@ -92,7 +92,6 @@ def is_transparent(image: Image.Image) -> bool:
 
             return False
         finally:
-            # Rewind so later processing uses the first frame rather than wherever the loop stopped
             image.seek(0)
 
     alpha = image.convert("RGBA").getchannel("A")
