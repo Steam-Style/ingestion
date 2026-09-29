@@ -22,6 +22,9 @@ API_BASE_URL = "https://api.steampowered.com/ILoyaltyRewardsService/QueryRewardI
 CDN_BASE_URL = "https://shared.fastly.steamstatic.com/community_assets/images"
 PROFILE_THEMES_CSS_URL = "https://community.fastly.steamstatic.com/public/css/skin_1/profilev2.css"
 PROFILE_PREVIEW_INTERVAL_SECONDS = 5
+PROFILE_PREVIEW_ATTEMPTS = 3
+PROFILE_PREVIEW_BACKOFF_SECONDS = 60
+PROFILE_PREVIEW_COOLDOWN_SECONDS = 900
 BUNDLE_PARTS = {
     3: "background",
     13: "mini_profile",
@@ -68,6 +71,7 @@ class SteamFetcher:
         self.apps: dict[Any, dict[str, Any]] = {}
         self.named_themes: dict[str, dict[str, str]] | None = None
         self.last_preview_request = 0.0
+        self.previews_paused_until = 0.0
 
         default_ua = utils.default_user_agent()
         custom_ua = f"{default_ua} (Steam-Style/1.0)"
@@ -386,18 +390,34 @@ class SteamFetcher:
         Returns:
             Optional[dict[str, str]]: The theme colors, or None if the preview page has none.
         """
-        wait = PROFILE_PREVIEW_INTERVAL_SECONDS - (time.monotonic() - self.last_preview_request)
-        
-        if wait > 0:
-            time.sleep(wait)
+        if time.monotonic() < self.previews_paused_until:
+            raise requests.HTTPError("Profile previews are paused after being rate limited by Steam")
 
-        self.last_preview_request = time.monotonic()
-        
-        response = self.session.get(
-            settings.PROFILE_PREVIEW_URL,
-            params={"previewprofile": 1, "appid": app_id, "itemtype": item_type},
-            timeout=30,
-        )
+        for attempt in range(PROFILE_PREVIEW_ATTEMPTS):
+            wait = PROFILE_PREVIEW_INTERVAL_SECONDS - (time.monotonic() - self.last_preview_request)
+
+            if wait > 0:
+                time.sleep(wait)
+
+            self.last_preview_request = time.monotonic()
+            response = self.session.get(
+                settings.PROFILE_PREVIEW_URL,
+                params={"previewprofile": 1, "appid": app_id, "itemtype": item_type},
+                timeout=30,
+            )
+
+            if response.status_code != 429:
+                break
+
+            if attempt == PROFILE_PREVIEW_ATTEMPTS - 1:
+                self.previews_paused_until = time.monotonic() + PROFILE_PREVIEW_COOLDOWN_SECONDS
+                break
+
+            retry_after = response.headers.get("Retry-After", "")
+            delay = int(retry_after) if retry_after.isdigit() else PROFILE_PREVIEW_BACKOFF_SECONDS * (attempt + 1)
+            logger.info("Steam is rate limiting profile previews, retrying in %s seconds", delay)
+            time.sleep(delay)
+
         response.raise_for_status()
         match = re.search(r"body\.GameProfileTheme\s*\{([^}]*)\}", response.text)
 
