@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     INGESTION_INTERVAL_SECONDS: int = 3600
     INGESTION_RETRY_SECONDS: int = 300
+    PROFILE_PREVIEW_URL: str = "https://steamcommunity.com/id/MayorCarol/"
 
     COLOR_HUE_BINS: int = 24
     COLOR_SAT_BINS: int = 3

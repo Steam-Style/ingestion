@@ -3,6 +3,7 @@ Handles ingestion of Steam item data, including image processing and vector data
 """
 import logging
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, TypedDict
@@ -101,29 +102,86 @@ def ensure_collection(client: QdrantClient) -> None:
             )
 
 
-def get_indexed_items(client: QdrantClient) -> dict[int, str | None]:
+def scroll_points(
+    client: QdrantClient,
+    scroll_filter: models.Filter | None = None,
+    with_payload: bool | list[str] = False,
+) -> Iterator[models.Record]:
     """
-    Retrieves the Steam update timestamp of every item already stored in the database.
+    Iterates over every point in the collection that matches the filter.
     """
-    indexed: dict[int, str | None] = {}
     offset: models.ExtendedPointId | None = None
 
     while True:
         points, offset = client.scroll(
             collection_name=settings.COLLECTION_NAME,
+            scroll_filter=scroll_filter,
             limit=1000,
             offset=offset,
-            with_payload=["timestamps"],
+            with_payload=with_payload,
             with_vectors=False,
         )
-
-        for point in points:
-            payload = point.payload or {}
-            indexed[int(point.id)] = payload.get(
-                "timestamps", {}).get("updated_at")
+        yield from points
 
         if offset is None:
-            return indexed
+            return
+
+
+def get_indexed_items(client: QdrantClient) -> dict[int, str | None]:
+    """
+    Retrieves the Steam update timestamp of every item already stored in the database.
+    """
+    indexed: dict[int, str | None] = {}
+
+    for point in scroll_points(client, with_payload=["timestamps"]):
+        payload = point.payload or {}
+        indexed[int(point.id)] = payload.get("timestamps", {}).get("updated_at")
+
+    missing_profiles = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="item.category",
+                match=models.MatchValue(value="game profiles"),
+            ),
+            models.IsEmptyCondition(is_empty=models.PayloadField(key="profile")),
+        ]
+    )
+
+    for point in scroll_points(client, scroll_filter=missing_profiles):
+        indexed.pop(int(point.id), None)
+
+    return indexed
+
+
+def fix_animated_flags(client: QdrantClient) -> None:
+    """
+    Marks items that have a video as animated, older versions only checked for the small videos.
+    """
+    has_large_video = [
+        models.Filter(
+            must_not=[
+                models.IsEmptyCondition(
+                    is_empty=models.PayloadField(key=f"item.assets.videos.{video_format}.large"))
+            ]
+        )
+        for video_format in ("webm", "mp4")
+    ]
+
+    client.set_payload(
+        collection_name=settings.COLLECTION_NAME,
+        payload={"animated": True},
+        key="item",
+        points=models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="item.animated",
+                    match=models.MatchValue(value=False),
+                )
+            ],
+            should=has_large_video,
+        ),
+        wait=True,
+    )
 
 
 def get_download_candidates(
@@ -154,6 +212,13 @@ def get_download_candidates(
 
             if image_url is None:
                 continue
+
+            if item["category"] == "game profiles":
+                payload["profile"] = fetcher.get_game_profile(definition)
+
+                background = (payload["profile"] or {}).get("background")
+                if background and background["images"]["large"]:
+                    image_url = background["images"]["large"]
 
             candidates.append(
                 {
@@ -276,9 +341,16 @@ def main() -> None:
     client = QdrantClient(url=settings.DATABASE_URL, timeout=60)
     fetcher = SteamFetcher()
 
+    animated_flags_fixed = False
+
     with ThreadPoolExecutor(max_workers=max(1, settings.IMAGE_DOWNLOAD_WORKERS)) as executor:
         while True:
             try:
+                if not animated_flags_fixed:
+                    ensure_collection(client)
+                    fix_animated_flags(client)
+                    animated_flags_fixed = True
+
                 run_cycle(client, fetcher, executor)
                 delay = settings.INGESTION_INTERVAL_SECONDS
             except Exception:
