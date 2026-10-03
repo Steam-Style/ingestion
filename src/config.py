@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     IMAGE_EMBEDDING_DIM: int = 768
     IMAGE_EMBEDDING_BATCH_SIZE: int = 16
     IMAGE_DOWNLOAD_WORKERS: int = 12
+    FRAMES_PER_ITEM: int = 8
     DEVICE: str = "cpu"
 
     INGESTION_INTERVAL_SECONDS: int = 3600

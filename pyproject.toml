@@ -17,6 +17,7 @@ dependencies = [
     "torch>=2.11.0",
     "torchvision>=0.26.0",
     "transformers>=5.5.3",
+    "av>=19.0.1",
 ]
 
 [tool.uv.sources]

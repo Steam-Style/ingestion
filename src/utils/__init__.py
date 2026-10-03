@@ -4,12 +4,14 @@ Utility functions for image processing and analysis.
 import logging
 from io import BytesIO
 
+import av
 import requests
 from PIL import Image, ImageSequence
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+FRAME_SIZE = 448
 
 _session = requests.Session()
 _retry_policy = Retry(
@@ -52,6 +54,93 @@ def download_image(url: str) -> Image.Image | None:
     except (Image.UnidentifiedImageError, OSError) as e:
         logger.warning("Error decoding image from %s: %s", url, e)
         return None
+
+
+def spread_indices(total: int, count: int) -> list[int]:
+    """
+    Picks up to count indices spread evenly over total items, each from the middle of its share.
+
+    Args:
+        total (int): How many items there are.
+        count (int): How many to pick.
+
+    Returns:
+        list[int]: The picked indices, in order and without repeats.
+    """
+    if total <= 0 or count <= 0:
+        return []
+
+    return sorted({min(total - 1, int((index + 0.5) * total / count)) for index in range(min(count, total))})
+
+
+def get_video_frames(url: str, count: int) -> list[Image.Image]:
+    """
+    Downloads a video and returns frames spread evenly over its length.
+
+    Args:
+        url (str): The URL of the video.
+        count (int): How many frames to return at most.
+
+    Returns:
+        list[Image.Image]: The frames, empty if the video could not be downloaded or decoded.
+    """
+    try:
+        response = _session.get(url, timeout=60)
+        response.raise_for_status()
+
+        with av.open(BytesIO(response.content)) as container:
+            total = sum(1 for _ in container.decode(video=0))
+
+        wanted = set(spread_indices(total, count))
+        frames: list[Image.Image] = []
+
+        with av.open(BytesIO(response.content)) as container:
+            for index, frame in enumerate(container.decode(video=0)):
+                if index in wanted:
+                    image = frame.to_image()
+                    image.thumbnail((FRAME_SIZE, FRAME_SIZE))
+                    frames.append(image)
+                if len(frames) == len(wanted):
+                    break
+
+        return frames
+
+    except requests.RequestException as e:
+        logger.warning("Request error downloading video from %s: %s", url, e)
+        return []
+    except (av.FFmpegError, IndexError, ValueError) as e:
+        logger.warning("Error decoding video from %s: %s", url, e)
+        return []
+
+
+def get_image_frames(image: Image.Image, count: int) -> list[Image.Image]:
+    """
+    Returns frames spread evenly over an animated image, like a GIF or an animated PNG.
+
+    Args:
+        image (Image.Image): The animated image.
+        count (int): How many frames to return at most.
+
+    Returns:
+        list[Image.Image]: The frames, empty if the image has only one.
+    """
+    frame_count = getattr(image, "n_frames", 1)
+
+    if frame_count <= 1:
+        return []
+
+    frames: list[Image.Image] = []
+
+    try:
+        for index in spread_indices(frame_count, count):
+            image.seek(index)
+            frames.append(image.convert("RGBA"))
+    except (EOFError, OSError) as e:
+        logger.warning("Error reading the frames of an animated image: %s", e)
+    finally:
+        image.seek(0)
+
+    return frames
 
 
 def is_animated(image: Image.Image) -> bool:
