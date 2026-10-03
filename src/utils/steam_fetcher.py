@@ -149,6 +149,7 @@ class SteamFetcher:
             params={
                 "cursor": cursor,
                 "count": 1000,
+                "include_direct_purchase_disabled": "true",
             },
             timeout=30,
         )
@@ -163,6 +164,35 @@ class SteamFetcher:
             self._prefetch_app_info(definitions)
 
         return definitions
+
+    def get_separately_sold_ids(self) -> tuple[set[int], int | None]:
+        """
+        Lists the IDs of the items that can be bought on their own, which is what the points shop lists by default.
+        The pages the ingestion walks also include items that only come in a bundle or aren't sold to everyone.
+
+        Returns:
+            tuple[set[int], Optional[int]]: The item IDs, and how many items the points shop said there are.
+
+        Raises:
+            requests.RequestException: If a page could not be fetched.
+            ValueError: If a response is not valid JSON.
+        """
+        item_ids: set[int] = set()
+        cursor: str | None = None
+        total_count: int | None = None
+
+        while True:
+            response = self.session.get(API_BASE_URL, params={"cursor": cursor, "count": 1000}, timeout=30)
+            response.raise_for_status()
+            response_data = response.json().get("response", {})
+            definitions = response_data.get("definitions", [])
+            total_count = response_data.get("total_count", total_count)
+            item_ids.update(int(definition["defid"]) for definition in definitions if definition.get("defid") is not None)
+
+            if not definitions or response_data.get("next_cursor") in (None, cursor):
+                return item_ids, total_count
+
+            cursor = response_data["next_cursor"]
 
     def _get_app_info(self, app_id: int | None) -> dict[str, Any] | None:
         """
@@ -318,6 +348,8 @@ class SteamFetcher:
                 "animated": item_animated,
                 "transparent": item_transparent,
                 "tiled": item_tiled,
+                "available": True,
+                "sold_separately": True,
                 "assets": assets,
             },
             "app": {
@@ -341,6 +373,7 @@ class SteamFetcher:
                 "available_at": self._parse_timestamp(definition.get("timestamp_available")),
                 "unavailable_at": self._parse_timestamp(definition.get("timestamp_available_end")),
                 "usable_duration_seconds": definition.get("usable_duration"),
+                "removed_at": None,
             },
         }
 
