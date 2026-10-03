@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -24,6 +25,8 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 heartbeat_file = Path("/tmp/heartbeat")
+MIN_LISTING_COVERAGE = 0.99
+AVAILABILITY_BATCH_SIZE = 1000
 
 PAYLOAD_INDEXES = {
     "timestamps.created_at": models.PayloadSchemaType.DATETIME,
@@ -31,6 +34,8 @@ PAYLOAD_INDEXES = {
     "item.animated": models.PayloadSchemaType.BOOL,
     "item.transparent": models.PayloadSchemaType.BOOL,
     "item.tiled": models.PayloadSchemaType.BOOL,
+    "item.available": models.PayloadSchemaType.BOOL,
+    "item.sold_separately": models.PayloadSchemaType.BOOL,
     "item.id": models.PayloadSchemaType.INTEGER,
     "item.name": models.PayloadSchemaType.KEYWORD,
     "item.category": models.PayloadSchemaType.KEYWORD,
@@ -188,9 +193,11 @@ def get_download_candidates(
     fetcher: SteamFetcher,
     definitions: list[dict[str, Any]],
     indexed: dict[int, str | None],
+    separately_sold: set[int] | None = None,
 ) -> list[DownloadCandidate]:
     """
     Maps a page of item definitions and keeps the items that are new or were updated since they were indexed.
+    Items are marked as sold on their own when they're in separately_sold, or always when it isn't known.
     """
     candidates: list[DownloadCandidate] = []
 
@@ -206,6 +213,8 @@ def get_download_candidates(
 
             if item_id in indexed and indexed[item_id] == updated_at:
                 continue
+
+            item["sold_separately"] = separately_sold is None or item_id in separately_sold
 
             images = item["assets"]["images"]
             image_url = images["small"] or images["large"]
@@ -281,11 +290,12 @@ def ingest_page(
     executor: ThreadPoolExecutor,
     definitions: list[dict[str, Any]],
     indexed: dict[int, str | None],
+    separately_sold: set[int] | None = None,
 ) -> int:
     """
     Downloads, embeds and uploads the new or updated items of a page in small batches.
     """
-    candidates = get_download_candidates(fetcher, definitions, indexed)
+    candidates = get_download_candidates(fetcher, definitions, indexed, separately_sold)
     batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
     uploaded = 0
 
@@ -313,24 +323,126 @@ def ingest_page(
     return uploaded
 
 
+def set_availability(client: QdrantClient, item_ids: list[int], available: bool) -> None:
+    """
+    Marks items as sold or no longer sold in the points shop, recording when they were first found missing.
+    """
+    removed_at = None if available else datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for start in range(0, len(item_ids), AVAILABILITY_BATCH_SIZE):
+        batch = item_ids[start:start + AVAILABILITY_BATCH_SIZE]
+        client.set_payload(
+            collection_name=settings.COLLECTION_NAME,
+            payload={"available": available},
+            key="item",
+            points=batch,
+            wait=True,
+        )
+        client.set_payload(
+            collection_name=settings.COLLECTION_NAME,
+            payload={"removed_at": removed_at},
+            key="timestamps",
+            points=batch,
+            wait=True,
+        )
+
+
+def set_sold_separately(client: QdrantClient, item_ids: list[int], sold_separately: bool) -> None:
+    """
+    Marks items as sold on their own, or as only coming in a bundle or not being sold to everyone.
+    """
+    for start in range(0, len(item_ids), AVAILABILITY_BATCH_SIZE):
+        client.set_payload(
+            collection_name=settings.COLLECTION_NAME,
+            payload={"sold_separately": sold_separately},
+            key="item",
+            points=item_ids[start:start + AVAILABILITY_BATCH_SIZE],
+            wait=True,
+        )
+
+
+def is_complete(item_ids: set[int], total_count: int | None) -> bool:
+    """
+    Checks that a listing has about as many items as the points shop said it would, so a listing that was cut short
+    isn't mistaken for items going away.
+    """
+    return bool(total_count) and len(item_ids) >= total_count * MIN_LISTING_COVERAGE
+
+
+def update_listing_state(
+    client: QdrantClient,
+    listed: set[int],
+    total_count: int | None,
+    separately_sold: set[int] | None,
+) -> None:
+    """
+    Marks stored items that the points shop no longer lists as unavailable and items that came back as available,
+    and which items are sold on their own. Items are never deleted, and nothing is marked from an incomplete listing.
+    """
+    if not is_complete(listed, total_count):
+        logger.warning("Skipping availability update, the listing had %d of %s items", len(listed), total_count)
+        return
+
+    removed: list[int] = []
+    returned: list[int] = []
+    sold_separately: list[int] = []
+    not_sold_separately: list[int] = []
+
+    for point in scroll_points(client, with_payload=["item.available", "item.sold_separately"]):
+        item_id = int(point.id)
+        item = (point.payload or {}).get("item", {})
+        available = item.get("available", True) is not False
+
+        if available and item_id not in listed:
+            removed.append(item_id)
+        elif not available and item_id in listed:
+            returned.append(item_id)
+
+        if separately_sold is not None:
+            should_be = item_id in listed and item_id in separately_sold
+            if item.get("sold_separately") is not should_be:
+                (sold_separately if should_be else not_sold_separately).append(item_id)
+
+    set_availability(client, removed, available=False)
+    set_availability(client, returned, available=True)
+    set_sold_separately(client, sold_separately, sold_separately=True)
+    set_sold_separately(client, not_sold_separately, sold_separately=False)
+
+    logger.info(
+        "Marked %d items as no longer sold, %d as sold again, %d as sold on their own and %d as not sold on their own",
+        len(removed), len(returned), len(sold_separately), len(not_sold_separately))
+
+
 def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolExecutor) -> None:
     """
-    Walks through every page of the points shop once and indexes new or updated items.
+    Walks through every page of the points shop once, indexes new or updated items and updates which items are
+    still sold.
     """
     ensure_collection(client)
     indexed = get_indexed_items(client)
     logger.info("Found %d indexed items in the database", len(indexed))
 
     fetcher.reset()
+    separately_sold, separately_sold_total = fetcher.get_separately_sold_ids()
+    if not is_complete(separately_sold, separately_sold_total):
+        logger.warning("Items sold on their own are unknown this cycle, the listing had %d of %s items",
+                       len(separately_sold), separately_sold_total)
+        separately_sold = None
+
     uploaded = 0
+    listed: set[int] = set()
 
     while definitions := fetcher.next_page():
+        listed.update(int(definition["defid"])
+                      for definition in definitions if definition.get("defid") is not None)
         uploaded += ingest_page(client, fetcher, executor,
-                                definitions, indexed)
+                                definitions, indexed, separately_sold)
         write_heartbeat()
 
     logger.info("Ingestion cycle finished, indexed %d new or updated items",
                 uploaded)
+
+    update_listing_state(client, listed, fetcher.total_count, separately_sold)
 
 
 def main() -> None:
