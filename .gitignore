@@ -217,3 +217,5 @@ __marimo__/
 
 # git
 .git/
+# Responses downloaded by src/backfill_archive.py
+archive_cache/
