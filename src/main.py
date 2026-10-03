@@ -14,7 +14,13 @@ from qdrant_client import QdrantClient, models
 from steam_style_embeddings import ColorEmbedder
 
 from config import settings
-from utils import download_image, is_animated, is_transparent
+from utils import (
+    download_image,
+    get_image_frames,
+    get_video_frames,
+    is_animated,
+    is_transparent,
+)
 from utils.models import get_image_embeddings, is_model_ready
 from utils.steam_fetcher import SteamFetcher
 
@@ -47,6 +53,7 @@ class DownloadCandidate(TypedDict):
     item_id: int
     payload: dict[str, Any]
     image_url: str
+    video_url: str | None
 
 
 color_embedder = ColorEmbedder(
@@ -91,6 +98,16 @@ def ensure_collection(client: QdrantClient) -> None:
                     size=color_embedder.embedding_dimension,
                     distance=models.Distance.COSINE,
                 ),
+                "frames": models.VectorParams(
+                    size=settings.IMAGE_EMBEDDING_DIM,
+                    distance=models.Distance.COSINE,
+                    multivector_config=models.MultiVectorConfig(
+                        comparator=models.MultiVectorComparator.MAX_SIM),
+                    on_disk=True,
+                    quantization_config=models.ScalarQuantization(
+                        scalar=models.ScalarQuantizationConfig(
+                            type=models.ScalarType.INT8, always_ram=True)),
+                ),
             },
         )
 
@@ -105,6 +122,30 @@ def ensure_collection(client: QdrantClient) -> None:
                 field_schema=schema,
                 wait=True,
             )
+
+
+def has_frames_vector(client: QdrantClient) -> bool:
+    """
+    Checks whether the collection stores the frames of animated items. Collections made before frames were added
+    don't, and keep getting a single image vector per item until they are recreated.
+    """
+    vectors = client.get_collection(collection_name=settings.COLLECTION_NAME).config.params.vectors
+    return isinstance(vectors, dict) and "frames" in vectors
+
+
+def get_video_url(assets: dict[str, Any] | None) -> str | None:
+    """
+    Picks the video to take frames from, preferring the small versions since frames are embedded at a small size.
+    """
+    videos = (assets or {}).get("videos") or {}
+
+    for size in ("small", "large"):
+        for video_format in ("webm", "mp4"):
+            url = (videos.get(video_format) or {}).get(size)
+            if url:
+                return url
+
+    return None
 
 
 def scroll_points(
@@ -222,18 +263,22 @@ def get_download_candidates(
             if image_url is None:
                 continue
 
+            video_url = get_video_url(item["assets"])
+
             if item["category"] == "game profiles":
                 payload["profile"] = fetcher.get_game_profile(definition)
 
                 background = (payload["profile"] or {}).get("background")
                 if background and background["images"]["large"]:
                     image_url = background["images"]["large"]
+                    video_url = get_video_url(background)
 
             candidates.append(
                 {
                     "item_id": item_id,
                     "payload": payload,
                     "image_url": image_url,
+                    "video_url": video_url,
                 }
             )
         except Exception:
@@ -243,16 +288,42 @@ def get_download_candidates(
     return candidates
 
 
+def embed_frames(frame_lists: list[list[Image.Image]]) -> list[list[list[float]]]:
+    """
+    Embeds the frames of several items in batches, and returns the vectors grouped by item again.
+    """
+    flat = [frame for frames in frame_lists for frame in frames]
+    batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
+    vectors = [
+        vector
+        for start in range(0, len(flat), batch_size)
+        for vector in get_image_embeddings(flat[start:start + batch_size])
+    ]
+
+    grouped: list[list[list[float]]] = []
+    position = 0
+
+    for frames in frame_lists:
+        grouped.append([vector for vector in vectors[position:position + len(frames)] if vector is not None])
+        position += len(frames)
+
+    return grouped
+
+
 def build_points(
     candidates: list[DownloadCandidate],
     images: list[Image.Image | None],
+    video_frames: list[list[Image.Image]],
+    with_frames: bool,
 ) -> list[models.PointStruct]:
     """
-    Computes the color and image embeddings of downloaded images and builds the points to upload.
+    Computes the color and image embeddings of downloaded images and builds the points to upload. With frames, animated
+    items also get a vector for each frame taken from their video or animated image, so searches match what happens
+    later in the animation too. Static items get their image vector as their only frame.
     """
-    prepared: list[tuple[DownloadCandidate, Image.Image, list[float]]] = []
+    prepared: list[tuple[DownloadCandidate, Image.Image, list[float], list[Image.Image]]] = []
 
-    for candidate, image in zip(candidates, images):
+    for candidate, image, frames in zip(candidates, images, video_frames):
         if image is None:
             continue
 
@@ -261,27 +332,32 @@ def build_points(
             item["animated"] = is_animated(image) or item["animated"]
             item["transparent"] = is_transparent(image)
             color_vector = color_embedder.image_to_embedding(image).tolist()
+
+            if with_frames and not frames and is_animated(image):
+                frames = get_image_frames(image, settings.FRAMES_PER_ITEM)
         except Exception:
             logger.exception("Error processing image of item %s",
                              candidate["item_id"])
             continue
 
-        prepared.append((candidate, image, color_vector))
+        prepared.append((candidate, image, color_vector, frames if with_frames else []))
 
-    image_vectors = get_image_embeddings([image for _, image, _ in prepared])
+    image_vectors = get_image_embeddings([image for _, image, _, _ in prepared])
+    frame_vectors = embed_frames([frames for _, _, _, frames in prepared])
 
-    return [
-        models.PointStruct(
-            id=candidate["item_id"],
-            vector={
-                "image": image_vector,
-                "color": color_vector,
-            },
-            payload=candidate["payload"],
-        )
-        for (candidate, _, color_vector), image_vector in zip(prepared, image_vectors)
-        if image_vector is not None
-    ]
+    points: list[models.PointStruct] = []
+
+    for (candidate, _, color_vector, _), image_vector, frames in zip(prepared, image_vectors, frame_vectors):
+        if image_vector is None:
+            continue
+
+        vector: dict[str, Any] = {"image": image_vector, "color": color_vector}
+        if with_frames:
+            vector["frames"] = frames or [image_vector]
+
+        points.append(models.PointStruct(id=candidate["item_id"], vector=vector, payload=candidate["payload"]))
+
+    return points
 
 
 def ingest_page(
@@ -291,6 +367,7 @@ def ingest_page(
     definitions: list[dict[str, Any]],
     indexed: dict[int, str | None],
     separately_sold: set[int] | None = None,
+    with_frames: bool = False,
 ) -> int:
     """
     Downloads, embeds and uploads the new or updated items of a page in small batches.
@@ -303,9 +380,16 @@ def ingest_page(
         batch = candidates[start:start + batch_size]
         images = list(executor.map(
             download_image, [candidate["image_url"] for candidate in batch]))
+        video_frames = list(executor.map(
+            lambda candidate: (
+                get_video_frames(candidate["video_url"], settings.FRAMES_PER_ITEM)
+                if with_frames and candidate["video_url"] else []
+            ),
+            batch,
+        ))
 
         try:
-            points = build_points(batch, images)
+            points = build_points(batch, images, video_frames, with_frames)
         finally:
             for image in images:
                 if image is not None:
@@ -419,6 +503,9 @@ def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolE
     still sold.
     """
     ensure_collection(client)
+    with_frames = has_frames_vector(client)
+    if not with_frames:
+        logger.warning("The collection has no frames vector, recreate it to search all frames of animated items")
     indexed = get_indexed_items(client)
     logger.info("Found %d indexed items in the database", len(indexed))
 
@@ -436,7 +523,7 @@ def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolE
         listed.update(int(definition["defid"])
                       for definition in definitions if definition.get("defid") is not None)
         uploaded += ingest_page(client, fetcher, executor,
-                                definitions, indexed, separately_sold)
+                                definitions, indexed, separately_sold, with_frames)
         write_heartbeat()
 
     logger.info("Ingestion cycle finished, indexed %d new or updated items",

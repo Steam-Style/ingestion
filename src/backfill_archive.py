@@ -27,7 +27,7 @@ import requests
 from qdrant_client import QdrantClient
 
 from config import settings
-from main import ensure_collection, ingest_page, scroll_points
+from main import ensure_collection, has_frames_vector, ingest_page, scroll_points
 from utils.steam_fetcher import API_BASE_URL, CATEGORIES, SteamFetcher
 
 logger = logging.getLogger("backfill")
@@ -419,6 +419,7 @@ def main() -> None:
         return
 
     fetcher = SteamFetcher()
+    with_frames = has_frames_vector(client)
     definitions = list(found.values())
     uploaded = 0
 
@@ -426,7 +427,7 @@ def main() -> None:
         for start in range(0, len(definitions), PAGE_SIZE):
             page = definitions[start:start + PAGE_SIZE]
             fetcher._prefetch_app_info(page)
-            uploaded += ingest_page(client, fetcher, executor, page, {}, set())
+            uploaded += ingest_page(client, fetcher, executor, page, {}, set(), with_frames)
             mark_unavailable(client, [definition["defid"] for definition in page])
             logger.info("Indexed %d of %d items", min(start + PAGE_SIZE, len(definitions)), len(definitions))
 
