@@ -34,7 +34,7 @@ heartbeat_file = Path("/tmp/heartbeat")
 MIN_LISTING_COVERAGE = 0.99
 AVAILABILITY_BATCH_SIZE = 1000
 
-PAYLOAD_INDEXES = {
+PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType | models.TextIndexParams] = {
     "timestamps.created_at": models.PayloadSchemaType.DATETIME,
     "timestamps.updated_at": models.PayloadSchemaType.DATETIME,
     "item.animated": models.PayloadSchemaType.BOOL,
@@ -45,6 +45,15 @@ PAYLOAD_INDEXES = {
     "item.id": models.PayloadSchemaType.INTEGER,
     "item.name": models.PayloadSchemaType.KEYWORD,
     "item.category": models.PayloadSchemaType.KEYWORD,
+    "item.title": models.TextIndexParams(
+        type=models.TextIndexType.TEXT,
+        tokenizer=models.TokenizerType.WORD,
+        lowercase=True,
+        ascii_folding=True,
+        phrase_matching=True,
+        stopwords=models.Language.ENGLISH,
+        stemmer=models.SnowballParams(type=models.Snowball.SNOWBALL, language=models.SnowballLanguage.ENGLISH),
+    ),
     "app.id": models.PayloadSchemaType.INTEGER,
 }
 
@@ -199,37 +208,6 @@ def get_indexed_items(client: QdrantClient) -> dict[int, str | None]:
     return indexed
 
 
-def fix_animated_flags(client: QdrantClient) -> None:
-    """
-    Marks items that have a video as animated, older versions only checked for the small videos.
-    """
-    has_large_video = [
-        models.Filter(
-            must_not=[
-                models.IsEmptyCondition(
-                    is_empty=models.PayloadField(key=f"item.assets.videos.{video_format}.large"))
-            ]
-        )
-        for video_format in ("webm", "mp4")
-    ]
-
-    client.set_payload(
-        collection_name=settings.COLLECTION_NAME,
-        payload={"animated": True},
-        key="item",
-        points=models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="item.animated",
-                    match=models.MatchValue(value=False),
-                )
-            ],
-            should=has_large_video,
-        ),
-        wait=True,
-    )
-
-
 def get_download_candidates(
     fetcher: SteamFetcher,
     definitions: list[dict[str, Any]],
@@ -319,7 +297,9 @@ def build_points(
     """
     Computes the color and image embeddings of downloaded images and builds the points to upload. With frames, animated
     items also get a vector for each frame taken from their video or animated image, so searches match what happens
-    later in the animation too. Static items get their image vector as their only frame.
+    later in the animation too. Static items get their image vector as their only frame. Colors, and item.neutral,
+    how much of the item has no color, come from the image and its frames together, so an animation that starts blank
+    still gets its colors.
     """
     prepared: list[tuple[DownloadCandidate, Image.Image, list[float], list[Image.Image]]] = []
 
@@ -331,10 +311,11 @@ def build_points(
             item = candidate["payload"]["item"]
             item["animated"] = is_animated(image) or item["animated"]
             item["transparent"] = is_transparent(image)
-            color_vector = color_embedder.image_to_embedding(image).tolist()
-
-            if with_frames and not frames and is_animated(image):
+            if not frames and is_animated(image):
                 frames = get_image_frames(image, settings.FRAMES_PER_ITEM)
+            color, neutral = color_embedder.images_to_embedding([image, *frames])
+            color_vector = color.tolist()
+            item["neutral"] = round(neutral, 3)
         except Exception:
             logger.exception("Error processing image of item %s",
                              candidate["item_id"])
@@ -540,16 +521,9 @@ def main() -> None:
     client = QdrantClient(url=settings.DATABASE_URL, timeout=60)
     fetcher = SteamFetcher()
 
-    animated_flags_fixed = False
-
     with ThreadPoolExecutor(max_workers=max(1, settings.IMAGE_DOWNLOAD_WORKERS)) as executor:
         while True:
             try:
-                if not animated_flags_fixed:
-                    ensure_collection(client)
-                    fix_animated_flags(client)
-                    animated_flags_fixed = True
-
                 run_cycle(client, fetcher, executor)
                 delay = settings.INGESTION_INTERVAL_SECONDS
             except Exception:

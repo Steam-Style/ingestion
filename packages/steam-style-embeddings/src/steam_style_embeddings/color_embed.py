@@ -103,6 +103,30 @@ class ColorEmbedder:
         hsv_pixels = self._extract_chromatic_hsv(image, alpha_mask)
         return self._soft_histogram(hsv_pixels)
 
+    def _opaque_hsv(self, image: Image.Image) -> NDArray[np.float64]:
+        image = image.resize((128, 128))
+        if image.mode == "P" and "transparency" in image.info:
+            image = image.convert("RGBA")
+
+        hsv = rgb2hsv(np.array(image.convert("RGB")).astype(np.float64) / 255.0).reshape(-1, 3)
+        if image.mode in ("RGBA", "LA"):
+            opaque = np.array(image.split()[-1]).reshape(-1) > 128
+            if opaque.any():
+                hsv = hsv[opaque]
+        return hsv
+
+    def images_to_embedding(self, images: list[Image.Image]) -> tuple[NDArray[np.float64], float]:
+        """
+        The color embedding of several pictures of one item together, like the frames of an animation, so a blank or
+        faded first frame doesn't decide its colors. Also returns how much of them has no color to speak of, from 0 to
+        1: the grey and near-black pixels the embedding leaves out, so an all black item, whose embedding comes out
+        dark red, is 1.
+        """
+        hsv = np.concatenate([self._opaque_hsv(image) for image in images])
+        neutral = (hsv[:, 1] < 0.12) | (hsv[:, 2] < 0.08)
+        chromatic = hsv[~neutral] if (~neutral).sum() >= 10 else hsv
+        return self._soft_histogram(chromatic), float(neutral.mean())
+
     def query_to_embedding(self, hex_colors: list[str]) -> list[float]:
         rgb_colors = []
 
