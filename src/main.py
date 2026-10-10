@@ -16,10 +16,10 @@ from steam_style_embeddings import ColorEmbedder
 from config import settings
 from utils import (
     download_image,
-    get_image_frames,
     get_video_frames,
+    has_transparent_pixels,
     is_animated,
-    is_transparent,
+    read_animation,
 )
 from utils.models import get_image_embeddings, is_model_ready
 from utils.steam_fetcher import SteamFetcher
@@ -45,6 +45,7 @@ PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType | models.TextIndexParams] = 
     "item.id": models.PayloadSchemaType.INTEGER,
     "item.name": models.PayloadSchemaType.KEYWORD,
     "item.category": models.PayloadSchemaType.KEYWORD,
+    "item.point_cost": models.PayloadSchemaType.INTEGER,
     "item.title": models.TextIndexParams(
         type=models.TextIndexType.TEXT,
         tokenizer=models.TokenizerType.WORD,
@@ -299,7 +300,7 @@ def build_points(
     items also get a vector for each frame taken from their video or animated image, so searches match what happens
     later in the animation too. Static items get their image vector as their only frame. Colors, and item.neutral,
     how much of the item has no color, come from the image and its frames together, so an animation that starts blank
-    still gets its colors.
+    still gets its colors. An animated image is read once, for its first frame, its frames and its transparency.
     """
     prepared: list[tuple[DownloadCandidate, Image.Image, list[float], list[Image.Image]]] = []
 
@@ -309,10 +310,12 @@ def build_points(
 
         try:
             item = candidate["payload"]["item"]
-            item["animated"] = is_animated(image) or item["animated"]
-            item["transparent"] = is_transparent(image)
-            if not frames and is_animated(image):
-                frames = get_image_frames(image, settings.FRAMES_PER_ITEM)
+            if is_animated(image):
+                image, image_frames, item["transparent"] = read_animation(image, settings.FRAMES_PER_ITEM)
+                item["animated"] = True
+                frames = frames or image_frames
+            else:
+                item["transparent"] = has_transparent_pixels(image)
             color, neutral = color_embedder.images_to_embedding([image, *frames])
             color_vector = color.tolist()
             item["neutral"] = round(neutral, 3)

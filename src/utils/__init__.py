@@ -56,6 +56,22 @@ def download_image(url: str) -> Image.Image | None:
         return None
 
 
+def parse_points(point_cost: str | int | None) -> int:
+    """
+    Turns a price as Steam returns it, a string like "500", into a number of points.
+
+    Args:
+        point_cost (str | int | None): The price.
+
+    Returns:
+        int: The price in points, 0 when there is none.
+    """
+    try:
+        return max(0, int(point_cost or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def spread_indices(total: int, count: int) -> list[int]:
     """
     Picks up to count indices spread evenly over total items, each from the middle of its share.
@@ -113,34 +129,36 @@ def get_video_frames(url: str, count: int) -> list[Image.Image]:
         return []
 
 
-def get_image_frames(image: Image.Image, count: int) -> list[Image.Image]:
+def read_animation(image: Image.Image, count: int) -> tuple[Image.Image, list[Image.Image], bool]:
     """
-    Returns frames spread evenly over an animated image, like a GIF or an animated PNG.
+    Reads an animated image, like a GIF or an animated PNG, in a single pass. Pillow can only go through an animated
+    PNG once, frames read after going back to the start come out black, so everything is taken on the way through.
 
     Args:
         image (Image.Image): The animated image.
-        count (int): How many frames to return at most.
+        count (int): How many frames to return at most, spread evenly over it.
 
     Returns:
-        list[Image.Image]: The frames, empty if the image has only one.
+        tuple[Image.Image, list[Image.Image], bool]: The first frame, the spread frames and whether any frame has
+        transparent pixels.
     """
-    frame_count = getattr(image, "n_frames", 1)
-
-    if frame_count <= 1:
-        return []
-
+    wanted = set(spread_indices(getattr(image, "n_frames", 1), count))
+    first: Image.Image | None = None
     frames: list[Image.Image] = []
+    transparent = False
 
     try:
-        for index in spread_indices(frame_count, count):
-            image.seek(index)
-            frames.append(image.convert("RGBA"))
+        for index, frame in enumerate(ImageSequence.Iterator(image)):
+            rgba = frame.convert("RGBA")
+            if first is None:
+                first = rgba
+            if index in wanted:
+                frames.append(rgba)
+            transparent = transparent or has_transparent_pixels(rgba)
     except (EOFError, OSError) as e:
         logger.warning("Error reading the frames of an animated image: %s", e)
-    finally:
-        image.seek(0)
 
-    return frames
+    return first if first is not None else image.convert("RGBA"), frames, transparent
 
 
 def is_animated(image: Image.Image) -> bool:
@@ -157,9 +175,9 @@ def is_animated(image: Image.Image) -> bool:
     return bool(getattr(image, "is_animated", False) or frame_count > 1)
 
 
-def is_transparent(image: Image.Image) -> bool:
+def has_transparent_pixels(image: Image.Image) -> bool:
     """
-    Checks if a given PIL Image has transparency.
+    Checks if a still image, or one frame of an animated one, has any pixels that aren't fully opaque.
 
     Args:
         image (Image.Image): The PIL Image to check.
@@ -167,24 +185,7 @@ def is_transparent(image: Image.Image) -> bool:
     Returns:
         bool: True if the image has transparency, False otherwise.
     """
-    if is_animated(image):
-        try:
-            for frame in ImageSequence.Iterator(image):
-                alpha = frame.convert("RGBA").getchannel("A")
-                extrema = alpha.getextrema()
-
-                if isinstance(extrema, tuple) and len(extrema) == 2:
-                    min_alpha = extrema[0]
-
-                    if isinstance(min_alpha, (int, float)) and min_alpha < 255:
-                        return True
-
-            return False
-        finally:
-            image.seek(0)
-
-    alpha = image.convert("RGBA").getchannel("A")
-    extrema = alpha.getextrema()
+    extrema = image.convert("RGBA").getchannel("A").getextrema()
 
     if isinstance(extrema, tuple) and len(extrema) == 2:
         min_alpha = extrema[0]

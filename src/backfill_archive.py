@@ -25,6 +25,8 @@ from typing import Any
 
 import requests
 from qdrant_client import QdrantClient
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config import settings
 from main import ensure_collection, has_frames_vector, ingest_page, scroll_points
@@ -399,6 +401,20 @@ def main() -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     session.headers.update({"User-Agent": "Steam Style backfill (https://steam.style)"})
+    session.mount(
+        "https://",
+        HTTPAdapter(
+            max_retries=Retry(
+                total=5,
+                connect=5,
+                read=5,
+                backoff_factor=2.0,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods={"GET"},
+                raise_on_status=False,
+            )
+        ),
+    )
 
     client = QdrantClient(url=settings.DATABASE_URL, timeout=60)
     ensure_collection(client)

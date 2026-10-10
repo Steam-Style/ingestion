@@ -15,6 +15,7 @@ from steam.client import SteamClient
 from urllib3.util.retry import Retry
 
 from config import settings
+from utils import parse_points
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +345,7 @@ class SteamFetcher:
                 "description": community_item_data.get("item_description"),
                 "internal_description": definition.get("internal_description"),
                 "category": category,
-                "point_cost": definition.get("point_cost"),
+                "point_cost": parse_points(definition.get("point_cost")),
                 "animated": item_animated,
                 "transparent": item_transparent,
                 "tiled": item_tiled,

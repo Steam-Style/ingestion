@@ -38,6 +38,8 @@ services:
       - MODEL_NAME=${MODEL_NAME:-google/siglip2-base-patch16-224}
       - INGESTION_INTERVAL_SECONDS=${INGESTION_INTERVAL_SECONDS:-3600}
       - PROFILE_PREVIEW_URL=${PROFILE_PREVIEW_URL:-https://steamcommunity.com/id/MayorCarol/}
+      - IMAGE_DOWNLOAD_WORKERS=${IMAGE_DOWNLOAD_WORKERS:-12}
+      - FRAMES_PER_ITEM=${FRAMES_PER_ITEM:-8}
     volumes:
       - hf_cache:/data/hf
 
