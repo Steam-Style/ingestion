@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 heartbeat_file = Path("/tmp/heartbeat")
 MIN_LISTING_COVERAGE = 0.99
 AVAILABILITY_BATCH_SIZE = 1000
+GAME_PROFILE_CLASS = 8
 
 PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType | models.TextIndexParams] = {
     "timestamps.created_at": models.PayloadSchemaType.DATETIME,
@@ -429,6 +430,32 @@ def set_sold_separately(client: QdrantClient, item_ids: list[int], sold_separate
         )
 
 
+def set_game_profile(client: QdrantClient, item_ids: list[int], game_profile: int | None) -> None:
+    """
+    Marks items as parts of a game profile, which are bought with it, or as not part of one when it's None.
+    """
+    for start in range(0, len(item_ids), AVAILABILITY_BATCH_SIZE):
+        client.set_payload(
+            collection_name=settings.COLLECTION_NAME,
+            payload={"game_profile": game_profile},
+            key="item",
+            points=item_ids[start:start + AVAILABILITY_BATCH_SIZE],
+            wait=True,
+        )
+
+
+def game_profile_parts(definitions: list[dict[str, Any]]) -> dict[int, int]:
+    """
+    The game profile each item comes with, from the game profiles in a page of the listing, which list their parts.
+    """
+    parts: dict[int, int] = {}
+    for definition in definitions:
+        if definition.get("community_item_class") == GAME_PROFILE_CLASS and definition.get("defid") is not None:
+            for part in definition.get("bundle_defids") or []:
+                parts.setdefault(int(part), int(definition["defid"]))
+    return parts
+
+
 def is_complete(item_ids: set[int], total_count: int | None) -> bool:
     """
     Checks that a listing has about as many items as the points shop said it would, so a listing that was cut short
@@ -442,10 +469,12 @@ def update_listing_state(
     listed: set[int],
     total_count: int | None,
     separately_sold: set[int] | None,
+    game_profiles: dict[int, int],
 ) -> None:
     """
     Marks stored items that the points shop no longer lists as unavailable and items that came back as available,
-    and which items are sold on their own. Items are never deleted, and nothing is marked from an incomplete listing.
+    which items are sold on their own and which game profile each part comes with. Items are never deleted, and
+    nothing is marked from an incomplete listing.
     """
     if not is_complete(listed, total_count):
         logger.warning("Skipping availability update, the listing had %d of %s items", len(listed), total_count)
@@ -455,8 +484,9 @@ def update_listing_state(
     returned: list[int] = []
     sold_separately: list[int] = []
     not_sold_separately: list[int] = []
+    profile_changes: dict[int | None, list[int]] = {}
 
-    for point in scroll_points(client, with_payload=["item.available", "item.sold_separately"]):
+    for point in scroll_points(client, with_payload=["item.available", "item.sold_separately", "item.game_profile"]):
         item_id = int(point.id)
         item = (point.payload or {}).get("item", {})
         available = item.get("available", True) is not False
@@ -471,14 +501,22 @@ def update_listing_state(
             if item.get("sold_separately") is not should_be:
                 (sold_separately if should_be else not_sold_separately).append(item_id)
 
+        game_profile = game_profiles.get(item_id)
+        if item.get("game_profile") != game_profile or "game_profile" not in item:
+            profile_changes.setdefault(game_profile, []).append(item_id)
+
     set_availability(client, removed, available=False)
     set_availability(client, returned, available=True)
     set_sold_separately(client, sold_separately, sold_separately=True)
     set_sold_separately(client, not_sold_separately, sold_separately=False)
+    for game_profile, item_ids in profile_changes.items():
+        set_game_profile(client, item_ids, game_profile)
 
     logger.info(
-        "Marked %d items as no longer sold, %d as sold again, %d as sold on their own and %d as not sold on their own",
-        len(removed), len(returned), len(sold_separately), len(not_sold_separately))
+        "Marked %d items as no longer sold, %d as sold again, %d as sold on their own, %d as not sold on their own "
+        "and changed the game profile of %d",
+        len(removed), len(returned), len(sold_separately), len(not_sold_separately),
+        sum(len(item_ids) for item_ids in profile_changes.values()))
 
 
 def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolExecutor) -> None:
@@ -502,10 +540,12 @@ def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolE
 
     uploaded = 0
     listed: set[int] = set()
+    game_profiles: dict[int, int] = {}
 
     while definitions := fetcher.next_page():
         listed.update(int(definition["defid"])
                       for definition in definitions if definition.get("defid") is not None)
+        game_profiles.update(game_profile_parts(definitions))
         uploaded += ingest_page(client, fetcher, executor,
                                 definitions, indexed, separately_sold, with_frames)
         write_heartbeat()
@@ -513,7 +553,7 @@ def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolE
     logger.info("Ingestion cycle finished, indexed %d new or updated items",
                 uploaded)
 
-    update_listing_state(client, listed, fetcher.total_count, separately_sold)
+    update_listing_state(client, listed, fetcher.total_count, separately_sold, game_profiles)
 
 
 def main() -> None:
