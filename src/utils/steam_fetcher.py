@@ -178,20 +178,43 @@ class SteamFetcher:
             requests.RequestException: If a page could not be fetched.
             ValueError: If a response is not valid JSON.
         """
-        item_ids: set[int] = set()
+        item_ids, total_count = self._list_ids({})
+        return set(item_ids), total_count
+
+    def get_popular_ids(self) -> tuple[list[int], int | None]:
+        """
+        Lists the IDs of every item the ingestion walks, most popular first, in the order of the points shop's own
+        "Popular" rows. Leaving out sort_descending gives the opposite order.
+
+        Returns:
+            tuple[list[int], Optional[int]]: The item IDs in order, and how many items the points shop said there are.
+
+        Raises:
+            requests.RequestException: If a page could not be fetched.
+            ValueError: If a response is not valid JSON.
+        """
+        return self._list_ids({"include_direct_purchase_disabled": "true", "sort": 2, "sort_descending": "false"})
+
+    def _list_ids(self, params: dict[str, Any]) -> tuple[list[int], int | None]:
+        """
+        Walks every page of a listing for only its item IDs, in the order listed, each ID once.
+        """
+        item_ids: dict[int, None] = {}
         cursor: str | None = None
         total_count: int | None = None
 
         while True:
-            response = self.session.get(API_BASE_URL, params={"cursor": cursor, "count": 1000}, timeout=30)
+            response = self.session.get(
+                API_BASE_URL, params={**params, "cursor": cursor, "count": 1000}, timeout=30)
             response.raise_for_status()
             response_data = response.json().get("response", {})
             definitions = response_data.get("definitions", [])
             total_count = response_data.get("total_count", total_count)
-            item_ids.update(int(definition["defid"]) for definition in definitions if definition.get("defid") is not None)
+            item_ids.update(
+                (int(definition["defid"]), None) for definition in definitions if definition.get("defid") is not None)
 
             if not definitions or response_data.get("next_cursor") in (None, cursor):
-                return item_ids, total_count
+                return list(item_ids), total_count
 
             cursor = response_data["next_cursor"]
 
