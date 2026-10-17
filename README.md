@@ -30,7 +30,7 @@ Each point's ID is the item's Points Shop ID. It has three vectors:
 | `color`  | 216                | Color histogram over 24 hues, 3 saturations and 3 brightnesses                        |
 | `frames` | 768 for each frame | SigLIP 2 embedding of each frame of animated items, and of the picture for still ones |
 
-The payload has the item (`item.*`), its game (`app.*`), links to Steam (`urls.*`) and dates (`timestamps.*`), plus `profile` for game profiles. `item.neutral` is the share of the picture without color, from 0 to 1. `item.popularity` is the item's place in the Points Shop's popular order, 1 being the most popular, updated once a day.
+The payload has the item (`item.*`), its game (`app.*`), links to Steam (`urls.*`) and dates (`timestamps.*`), plus `profile` for game profiles. `item.neutral` is the share of the picture without color, from 0 to 1.
 
 ## Running
 
@@ -63,7 +63,6 @@ Set these as environment variables.
 | `DEVICE`                     | `cpu`                                       | Where the model runs, like `cuda`                          |
 | `MODEL_NAME`                 | `google/siglip2-base-patch16-224`           | The embedding model, must match the API's                  |
 | `INGESTION_INTERVAL_SECONDS` | `3600`                                      | Time between runs                                          |
-| `POPULARITY_INTERVAL_SECONDS` | `86400`                                   | Time between updates of the popular order                  |
 | `PROFILE_PREVIEW_URL`        | `https://steamcommunity.com/id/MayorCarol/` | A public Steam profile used to preview game profile themes |
 | `IMAGE_DOWNLOAD_WORKERS`     | `12`                                        | Pictures downloaded at the same time                       |
 | `FRAMES_PER_ITEM`            | `8`                                         | Frames taken from each animated item                       |

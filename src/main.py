@@ -47,7 +47,6 @@ PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType | models.TextIndexParams] = 
     "item.name": models.PayloadSchemaType.KEYWORD,
     "item.category": models.PayloadSchemaType.KEYWORD,
     "item.point_cost": models.PayloadSchemaType.INTEGER,
-    "item.popularity": models.PayloadSchemaType.INTEGER,
     "item.title": models.TextIndexParams(
         type=models.TextIndexType.TEXT,
         tokenizer=models.TokenizerType.WORD,
@@ -59,28 +58,6 @@ PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType | models.TextIndexParams] = 
     ),
     "app.id": models.PayloadSchemaType.INTEGER,
 }
-
-
-class Popularity:
-    """
-    Where each item stands in the points shop's popular order, 1 being the most popular. It's fetched again once a
-    day, since it changes slowly and fetching it walks every page of the points shop.
-    """
-
-    def __init__(self) -> None:
-        self.ranks: dict[int, int] | None = None
-        self.fetched_at: float | None = None
-
-    def is_due(self) -> bool:
-        return self.fetched_at is None or time.monotonic() - self.fetched_at >= settings.POPULARITY_INTERVAL_SECONDS
-
-    def rank(self, item_id: int) -> int | None:
-        """
-        The item's place, after every ranked item when the points shop didn't rank it, None before any ranking.
-        """
-        if self.ranks is None:
-            return None
-        return self.ranks.get(item_id, len(self.ranks) + 1)
 
 
 class DownloadCandidate(TypedDict):
@@ -238,12 +215,10 @@ def get_download_candidates(
     definitions: list[dict[str, Any]],
     indexed: dict[int, str | None],
     separately_sold: set[int] | None = None,
-    popularity: Popularity | None = None,
 ) -> list[DownloadCandidate]:
     """
     Maps a page of item definitions and keeps the items that are new or were updated since they were indexed.
-    Items are marked as sold on their own when they're in separately_sold, or always when it isn't known, and get
-    their place in the popular order when it's known.
+    Items are marked as sold on their own when they're in separately_sold, or always when it isn't known.
     """
     candidates: list[DownloadCandidate] = []
 
@@ -261,9 +236,6 @@ def get_download_candidates(
                 continue
 
             item["sold_separately"] = separately_sold is None or item_id in separately_sold
-            rank = popularity.rank(item_id) if popularity is not None else None
-            if rank is not None:
-                item["popularity"] = rank
 
             images = item["assets"]["images"]
             image_url = images["small"] or images["large"]
@@ -381,12 +353,11 @@ def ingest_page(
     indexed: dict[int, str | None],
     separately_sold: set[int] | None = None,
     with_frames: bool = False,
-    popularity: Popularity | None = None,
 ) -> int:
     """
     Downloads, embeds and uploads the new or updated items of a page in small batches.
     """
-    candidates = get_download_candidates(fetcher, definitions, indexed, separately_sold, popularity)
+    candidates = get_download_candidates(fetcher, definitions, indexed, separately_sold)
     batch_size = max(1, settings.IMAGE_EMBEDDING_BATCH_SIZE)
     uploaded = 0
 
@@ -548,56 +519,10 @@ def update_listing_state(
         sum(len(item_ids) for item_ids in profile_changes.values()))
 
 
-def update_popularity(client: QdrantClient, fetcher: SteamFetcher, popularity: Popularity) -> None:
-    """
-    Fetches the points shop's popular order and stores each item's place in it as item.popularity. Items the points
-    shop no longer lists come after every listed item, by ID, so every item has a place to sort by. Only places that
-    changed are written, and nothing changes when the listing was cut short.
-    """
-    item_ids, total_count = fetcher.get_popular_ids()
-    if not is_complete(set(item_ids), total_count):
-        logger.warning("Skipping the popular order, the listing had %d of %s items", len(item_ids), total_count)
-        return
-
-    popularity.ranks = {item_id: rank for rank, item_id in enumerate(item_ids, start=1)}
-    popularity.fetched_at = time.monotonic()
-
-    stored = {
-        int(point.id): (point.payload or {}).get("item", {}).get("popularity")
-        for point in scroll_points(client, with_payload=["item.popularity"])
-    }
-    unlisted = sorted(item_id for item_id in stored if item_id not in popularity.ranks)
-    after_listed = {item_id: len(popularity.ranks) + index for index, item_id in enumerate(unlisted, start=1)}
-    changes = [
-        (item_id, rank)
-        for item_id, current in stored.items()
-        if (rank := popularity.ranks.get(item_id) or after_listed[item_id]) != current
-    ]
-
-    for start in range(0, len(changes), AVAILABILITY_BATCH_SIZE):
-        client.batch_update_points(
-            collection_name=settings.COLLECTION_NAME,
-            update_operations=[
-                models.SetPayloadOperation(
-                    set_payload=models.SetPayload(payload={"popularity": rank}, points=[item_id], key="item"))
-                for item_id, rank in changes[start:start + AVAILABILITY_BATCH_SIZE]
-            ],
-            wait=True,
-        )
-        write_heartbeat()
-
-    logger.info("Updated the popular place of %d items, %d aren't listed", len(changes), len(unlisted))
-
-
-def run_cycle(
-    client: QdrantClient,
-    fetcher: SteamFetcher,
-    executor: ThreadPoolExecutor,
-    popularity: Popularity,
-) -> None:
+def run_cycle(client: QdrantClient, fetcher: SteamFetcher, executor: ThreadPoolExecutor) -> None:
     """
     Walks through every page of the points shop once, indexes new or updated items and updates which items are
-    still sold. Once a day it also updates where items stand in the points shop's popular order.
+    still sold.
     """
     ensure_collection(client)
     with_frames = has_frames_vector(client)
@@ -605,9 +530,6 @@ def run_cycle(
         logger.warning("The collection has no frames vector, recreate it to search all frames of animated items")
     indexed = get_indexed_items(client)
     logger.info("Found %d indexed items in the database", len(indexed))
-
-    if popularity.is_due():
-        update_popularity(client, fetcher, popularity)
 
     fetcher.reset()
     separately_sold, separately_sold_total = fetcher.get_separately_sold_ids()
@@ -625,7 +547,7 @@ def run_cycle(
                       for definition in definitions if definition.get("defid") is not None)
         game_profiles.update(game_profile_parts(definitions))
         uploaded += ingest_page(client, fetcher, executor,
-                                definitions, indexed, separately_sold, with_frames, popularity)
+                                definitions, indexed, separately_sold, with_frames)
         write_heartbeat()
 
     logger.info("Ingestion cycle finished, indexed %d new or updated items",
@@ -641,12 +563,11 @@ def main() -> None:
     write_heartbeat()
     client = QdrantClient(url=settings.DATABASE_URL, timeout=60)
     fetcher = SteamFetcher()
-    popularity = Popularity()
 
     with ThreadPoolExecutor(max_workers=max(1, settings.IMAGE_DOWNLOAD_WORKERS)) as executor:
         while True:
             try:
-                run_cycle(client, fetcher, executor, popularity)
+                run_cycle(client, fetcher, executor)
                 delay = settings.INGESTION_INTERVAL_SECONDS
             except Exception:
                 logger.exception("Ingestion cycle failed")
