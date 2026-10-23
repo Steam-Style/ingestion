@@ -3,6 +3,7 @@ services:
     image: qdrant/qdrant:v1.19.1
     container_name: steam-style-qdrant
     restart: unless-stopped
+    mem_limit: 1536m
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
@@ -18,6 +19,7 @@ services:
     depends_on:
       - qdrant
     cpu_shares: 256
+    mem_limit: 1280m
     oom_score_adj: 500
     healthcheck:
       test:
